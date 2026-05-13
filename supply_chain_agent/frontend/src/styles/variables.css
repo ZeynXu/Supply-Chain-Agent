@@ -1,0 +1,124 @@
+:root {
+  /* 主色调 - 供应链科技蓝 */
+  --color-primary: #2A5C82;
+  --color-primary-light: #3d7aa8;
+  --color-primary-dark: #1E3A8A;
+  --color-primary-bg: rgba(42, 92, 130, 0.1);
+
+  /* 背景色 */
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #fafafa;
+  --bg-elevated: #ffffff;
+
+  /* 文字颜色 */
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(0, 0, 0, 0.65);
+  --text-tertiary: rgba(0, 0, 0, 0.45);
+  --text-quaternary: rgba(0, 0, 0, 0.25);
+
+  /* 边框颜色 */
+  --border-color: #d9d9d9;
+  --border-light: #f0f0f0;
+  --border-hover: #4096ff;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.03), 0 2px 4px rgba(0, 0, 0, 0.03), 0 4px 8px rgba(0, 0, 0, 0.03);
+
+  /* 状态颜色 */
+  --color-success: #52c41a;
+  --color-success-bg: rgba(82, 196, 26, 0.1);
+  --color-warning: #faad14;
+  --color-warning-bg: rgba(250, 173, 20, 0.1);
+  --color-error: #ff4d4f;
+  --color-error-bg: rgba(255, 77, 79, 0.1);
+  --color-info: #1890ff;
+  --color-info-bg: rgba(24, 144, 255, 0.1);
+
+  /* Agent类型颜色 */
+  --agent-orchestrator: #722ed1;
+  --agent-parser: #1890ff;
+  --agent-executor: #52c41a;
+  --agent-auditor: #faad14;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* 过渡 */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+}
+
+/* 暗色模式 */
+[data-theme='dark'] {
+  /* 主色调 */
+  --color-primary: #4a9ad4;
+  --color-primary-light: #5eb0eb;
+  --color-primary-dark: #2A5C82;
+  --color-primary-bg: rgba(74, 154, 212, 0.15);
+
+  /* 背景色 */
+  --bg-primary: #141414;
+  --bg-secondary: #1f1f1f;
+  --bg-tertiary: #262626;
+  --bg-elevated: #1f1f1f;
+
+  /* 文字颜色 */
+  --text-primary: rgba(255, 255, 255, 0.85);
+  --text-secondary: rgba(255, 255, 255, 0.65);
+  --text-tertiary: rgba(255, 255, 255, 0.45);
+  --text-quaternary: rgba(255, 255, 255, 0.25);
+
+  /* 边框颜色 */
+  --border-color: #434343;
+  --border-light: #303030;
+  --border-hover: #177ddc;
+
+  /* 阴影 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 2px 4px rgba(0, 0, 0, 0.2);
+
+  /* 状态颜色 - 暗色模式调整 */
+  --color-success: #73d13d;
+  --color-success-bg: rgba(115, 209, 61, 0.15);
+  --color-warning: #ffc53d;
+  --color-warning-bg: rgba(255, 197, 61, 0.15);
+  --color-error: #ff7875;
+  --color-error-bg: rgba(255, 120, 117, 0.15);
+  --color-info: #177ddc;
+  --color-info-bg: rgba(23, 125, 220, 0.15);
+
+  /* Agent类型颜色 - 暗色模式调整 */
+  --agent-orchestrator: #9254de;
+  --agent-parser: #40a9ff;
+  --agent-executor: #73d13d;
+  --agent-auditor: #ffc53d;
+}
+
+/* 响应式断点变量 */
+:root {
+  --breakpoint-xs: 480px;
+  --breakpoint-sm: 576px;
+  --breakpoint-md: 768px;
+  --breakpoint-lg: 992px;
+  --breakpoint-xl: 1200px;
+  --breakpoint-xxl: 1600px;
+}
+
+/* 导出变量供JS使用 */
+@media screen {
+  :root {
+    --sidebar-width: 200px;
+    --sidebar-collapsed-width: 80px;
+    --header-height: 64px;
+  }
+}

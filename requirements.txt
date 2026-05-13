@@ -1,0 +1,73 @@
+# ===========================================
+# Supply Chain Agent - Python Dependencies
+# ===========================================
+
+# -------------------------------------------
+# Core Framework
+# -------------------------------------------
+# LangGraph - Multi-agent orchestration and state management
+langgraph>=0.2.0
+# LangChain - LLM application framework
+langchain>=0.2.0
+langchain-anthropic>=0.2.0
+langchain-community>=0.2.0
+
+# -------------------------------------------
+# MCP Server
+# -------------------------------------------
+# MCP - Model Context Protocol for tool integration
+mcp>=1.0.0
+fastmcp>=0.1.0
+
+# -------------------------------------------
+# Memory & Vector Store
+# -------------------------------------------
+# ChromaDB - Vector storage for SOP, FAQ, historical cases
+chromadb>=0.5.0
+
+# -------------------------------------------
+# Web Framework
+# -------------------------------------------
+# FastAPI - REST API framework
+fastapi>=0.110.0
+# Uvicorn - ASGI server
+uvicorn>=0.30.0
+# Gradio - Web demo interface (backup/optional)
+gradio>=4.0.0
+
+# -------------------------------------------
+# HTTP Client
+# -------------------------------------------
+# Aiohttp - Async HTTP client for MCP tool calls
+aiohttp>=3.9.0
+
+# -------------------------------------------
+# Configuration & Utilities
+# -------------------------------------------
+# Pydantic - Data validation
+pydantic>=2.0.0
+# Pydantic Settings - Configuration management
+pydantic-settings>=2.0.0
+# Python Dotenv - Environment variables
+python-dotenv>=1.0.0
+# Psutil - System and process utilities
+psutil>=5.9.0
+
+# -------------------------------------------
+# Visualization (optional)
+# -------------------------------------------
+# NetworkX - Graph visualization for workflow
+networkx>=3.0
+# Matplotlib - Plotting for workflow visualization
+matplotlib>=3.7.0
+
+# -------------------------------------------
+# Development & Testing
+# -------------------------------------------
+# Pytest - Testing framework
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+# Black - Code formatter
+black>=24.0.0
+# MyPy - Static type checker
+mypy>=1.0.0

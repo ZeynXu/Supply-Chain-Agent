@@ -1,0 +1,37 @@
+/*!
+ * @antv/g
+ * @description A core module for rendering engine implements DOM API.
+ * @version 6.3.0
+ * @date 12/22/2025, 3:03:01 AM
+ * @author AntVis
+ * @docs https://g.antv.antgroup.com/
+ */
+
+/*!
+ * @antv/g-canvas
+ * @description A renderer implemented by Canvas 2D API
+ * @version 2.1.0
+ * @date 12/22/2025, 3:03:16 AM
+ * @author AntVis
+ * @docs https://g.antv.antgroup.com/
+ */
+
+/*!
+ * @antv/g-lite
+ * @description A core module for rendering engine implements DOM API.
+ * @version 2.6.0
+ * @date 12/22/2025, 3:02:41 AM
+ * @author AntVis
+ * @docs https://g.antv.antgroup.com/
+ */
+
+/*!
+ * @antv/g-math
+ * @description Geometry util
+ * @version 3.1.0
+ * @date 12/22/2025, 3:02:36 AM
+ * @author AntVis
+ * @docs https://g.antv.antgroup.com/
+ */
+
+/*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */

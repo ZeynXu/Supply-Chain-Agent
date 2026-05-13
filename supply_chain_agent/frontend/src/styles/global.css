@@ -1,0 +1,247 @@
+/* 全局样式 */
+@import './variables.css';
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* 消息滑入动画 */
+@keyframes messageSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-enter {
+  animation: messageSlideIn 0.3s ease-out;
+}
+
+/* 步骤高亮动画 */
+@keyframes stepHighlightAnim {
+  0% {
+    background: rgba(24, 144, 255, 0.1);
+  }
+  50% {
+    background: rgba(24, 144, 255, 0.2);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.step-highlight {
+  animation: stepHighlightAnim 1s ease-out;
+}
+
+/* 脉冲动画 - 用于处理中状态 */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.pulse-animation {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* 淡入动画 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* 响应式布局辅助类 */
+@media (max-width: 1280px) {
+  .hide-on-small {
+    display: none !important;
+  }
+}
+
+@media (min-width: 1280px) {
+  .show-on-small {
+    display: none !important;
+  }
+}
+
+/* 暗色模式下的特殊处理 */
+[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+/* 卡片悬停效果 */
+.ant-card {
+  transition: box-shadow 0.2s ease;
+}
+
+/* 按钮悬停效果增强 */
+.ant-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(42, 92, 130, 0.3);
+}
+
+/* 聊天消息气泡样式 */
+.chat-bubble-user {
+  background: linear-gradient(135deg, #2A5C82 0%, #1E3A8A 100%);
+  color: white;
+  border-radius: 16px 16px 4px 16px;
+}
+
+.chat-bubble-assistant {
+  background: var(--bg-secondary);
+  border-radius: 16px 16px 16px 4px;
+}
+
+/* Markdown内容样式 */
+.markdown-content {
+  line-height: 1.8;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  margin-top: 16px;
+  margin-bottom: 8px;
+}
+
+.markdown-content p {
+  margin-bottom: 8px;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  padding-left: 20px;
+  margin-bottom: 8px;
+}
+
+.markdown-content code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background: var(--bg-tertiary);
+  padding: 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.markdown-content pre code {
+  background: transparent;
+  padding: 0;
+}
+
+/* 表格样式增强 */
+.ant-table-tbody > tr:hover > td {
+  background: var(--bg-tertiary) !important;
+}
+
+/* 统计卡片样式 */
+.stat-card {
+  transition: all 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* 标签样式增强 */
+.ant-tag {
+  border-radius: 4px;
+}
+
+/* 输入框聚焦效果 */
+.ant-input:focus,
+.ant-input-focused,
+.ant-input-textarea:focus {
+  box-shadow: 0 0 0 2px rgba(42, 92, 130, 0.2);
+}
+
+/* 抽屉样式 */
+.ant-drawer-content {
+  background: var(--bg-primary);
+}
+
+/* 模态框样式 */
+.ant-modal-content {
+  border-radius: 12px;
+}
+
+/* Popover样式 */
+.ant-popover-inner {
+  border-radius: 8px;
+}
+
+/* Badge脉冲效果 */
+.ant-badge-status-processing::after {
+  animation: antStatusProcessing 1.2s infinite ease-in-out;
+}
+
+@keyframes antStatusProcessing {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+/* 悬浮工具栏样式优化 */
+.ant-popover-arrow::before {
+  background: var(--bg-primary);
+}

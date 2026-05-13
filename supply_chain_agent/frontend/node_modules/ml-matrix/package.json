@@ -1,0 +1,88 @@
+{
+  "name": "ml-matrix",
+  "version": "6.12.2",
+  "description": "Matrix manipulation and computation library",
+  "main": "matrix.js",
+  "module": "src/index.js",
+  "jsdelivr": "matrix.umd.js",
+  "unpkg": "matrix.umd.js",
+  "types": "matrix.d.ts",
+  "exports": {
+    ".": {
+      "types": "./matrix.d.ts",
+      "require": "./matrix.js",
+      "default": "./matrix.mjs"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "matrix.d.ts",
+    "matrix.js",
+    "matrix.js.map",
+    "matrix.mjs",
+    "matrix.umd.js",
+    "matrix.umd.js.map",
+    "src"
+  ],
+  "scripts": {
+    "build-esm-facade": "node tools/build-esm-facade.mjs",
+    "compile": "rollup -c",
+    "eslint": "eslint src testUtils.js",
+    "eslint-fix": "npm run eslint -- --fix",
+    "prepack": "npm run compile && npm run build-esm-facade",
+    "prettier": "prettier --check src",
+    "prettier-write": "prettier --write src",
+    "test": "npm run test-only && npm run eslint && npm run prettier",
+    "test-only": "vitest run --coverage"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mljs/matrix.git"
+  },
+  "keywords": [
+    "matrix",
+    "decomposition",
+    "SVD",
+    "singular",
+    "value",
+    "EVD",
+    "eigenvalue",
+    "LU",
+    "Qr",
+    "Cholesky",
+    "data",
+    "mining",
+    "datamining",
+    "machine",
+    "learning"
+  ],
+  "author": "Michaël Zasso",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mljs/matrix/issues"
+  },
+  "homepage": "https://github.com/mljs/matrix",
+  "devDependencies": {
+    "@babel/plugin-transform-modules-commonjs": "^7.27.1",
+    "@rollup/plugin-commonjs": "^28.0.6",
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "@vitest/coverage-v8": "^3.2.4",
+    "benchmark": "^2.1.4",
+    "csv-parse": "^5.6.0",
+    "eslint": "^9.29.0",
+    "eslint-config-cheminfo": "^14.1.1",
+    "jest-matcher-deep-close-to": "^3.0.2",
+    "mathjs": "^14.5.2",
+    "ml-dataset-iris": "^1.2.1",
+    "numeric": "^1.2.6",
+    "prettier": "^3.5.3",
+    "pretty-hrtime": "^1.0.3",
+    "rollup": "^4.44.0",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "is-any-array": "^3.0.0",
+    "ml-array-rescale": "^2.0.0"
+  }
+}

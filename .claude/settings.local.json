@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python -c \"from tools.mock_data.sample_data import *; print\\('WORK_ORDERS keys:', list\\(WORK_ORDERS.keys\\(\\)\\)[:5] if WORK_ORDERS else 'empty'\\); print\\('ISSUE_CATEGORIES:', ISSUE_CATEGORIES\\); print\\('SAMPLE_ISSUES keys:', list\\(SAMPLE_ISSUES.keys\\(\\)\\)[:5] if SAMPLE_ISSUES else 'empty'\\)\")",
+      "Bash(python *)",
+      "Bash(xargs ls *)",
+      "Bash(pip list *)",
+      "Bash(npm install *)",
+      "Bash(curl *)",
+      "Bash(npm run *)",
+      "Bash(rm -f test_new_intents.py)",
+      "Bash(rm -f test_phase3_rag.py)",
+      "Bash(rm -f test_phase3_stability.py)",
+      "Bash(rm -f test_phase4_simple.py)",
+      "Bash(rm -f phase4_test_generator.py)",
+      "mcp__plugin_claude-mem_mcp-search__smart_search",
+      "Bash(netstat -tlnp)",
+      "Bash(pip show *)",
+      "Bash(python3 -c \"from fastmcp import FastMCP; help\\(FastMCP.run\\)\")",
+      "Bash(python3 *)",
+      "Bash(pkill -f \"supply_chain_agent\")",
+      "Bash(xargs cat *)",
+      "Bash(lsof *)",
+      "Bash(pkill -f \"vite\")",
+      "Bash(npx tsc *)",
+      "Bash(kill 25406 25407)",
+      "Skill(devpace:pace-dev)",
+      "mcp__plugin_claude-mem_mcp-search__smart_outline",
+      "Bash(sqlite3 *)",
+      "Bash(sqlite3 /root/Supply_Chain_Agent/data/agent_memory.db \"SELECT case_id, intent_type, intent_subtype, user_input, agent_response, tools_used, entities_extracted, processing_time_ms, success, quality_score, quality_level, tags, metadata FROM enhanced_cases ORDER BY case_id;\")",
+      "Bash(sqlite3 /root/Supply_Chain_Agent/supply_chain_agent/data/agent_memory.db \"SELECT case_id, intent_type, intent_subtype, user_input, agent_response, tools_used, entities_extracted, processing_time_ms, success, quality_score, quality_level, tags, metadata FROM enhanced_cases ORDER BY case_id;\")",
+      "Read(//tmp/**)"
+    ]
+  }
+}

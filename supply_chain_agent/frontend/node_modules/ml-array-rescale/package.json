@@ -1,0 +1,33 @@
+{
+  "name": "ml-array-rescale",
+  "version": "2.0.0",
+  "description": "Rescale an array into a range",
+  "type": "module",
+  "exports": {
+    ".": {
+      "ml-array-internal": "./src/index.ts",
+      "default": "./lib/index.js"
+    }
+  },
+  "files": [
+    "lib",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mljs/array.git"
+  },
+  "keywords": [],
+  "author": "Michaël Zasso",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mljs/array/issues"
+  },
+  "homepage": "https://github.com/mljs/array/tree/master/packages/array-rescale#readme",
+  "dependencies": {
+    "is-any-array": "^3.0.0",
+    "ml-array-max": "^2.0.0",
+    "ml-array-min": "^2.0.0"
+  },
+  "gitHead": "17f10d119716a8d6f4c8bb828d9fe0da8bf1c036"
+}
