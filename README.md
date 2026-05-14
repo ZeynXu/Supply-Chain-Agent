@@ -89,23 +89,6 @@
 | **📚 向量存储** | ChromaDB | 轻量级向量数据库 |
 | **💾 关系存储** | SQLite | 轻量级关系数据库 |
 
-### 📊 数据流架构
-
-```mermaid
-graph TD
-    A[用户输入] --> B[Parser解析]
-    B --> C{需要澄清?}
-    C -->|是| D[Clarify澄清]
-    D --> B
-    C -->|否| E[Executor执行]
-    E --> F[工具调用]
-    F --> G[Auditor审计]
-    G --> H{审计通过?}
-    H -->|否| I[错误处理]
-    H -->|是| J[Report生成]
-    J --> K[响应输出]
-```
-
 ### 🧠 三层记忆系统
 
 ```
@@ -167,7 +150,7 @@ graph TD
 
 ```bash
 # 1. 克隆项目
-git clone https://github.com/your-username/supply-chain-agent.git
+git clone https://github.com/ZeynXu/Supply-Chain-Agent.git
 cd supply-chain-agent
 
 # 2. 创建虚拟环境
@@ -348,30 +331,6 @@ graph TD
     J -->|否| K[handle_error 错误处理]
     J -->|是| L[generate_report 生成报告]
     L --> M[响应输出]
-```
-
-## 📚 文档体系
-
-### 📖 完整文档导航
-
-我们提供了完整的中文技术文档体系：
-
-| 文档类型 | 内容概述 | 目标读者 |
-|---------|---------|---------|
-| **🚀 快速开始** | 安装部署、基础配置 | 所有用户 |
-| **📋 产品需求** | PRD文档、功能规格 | 产品人员 |
-| **🔧 API文档** | REST API接口文档 | 开发人员 |
-| **📦 部署指南** | 生产部署、运维指南 | 运维人员 |
-| **📊 研究报告** | 项目全面分析报告 | 所有人员 |
-
-### 📁 文档目录结构
-
-```
-docs/
-├── 🚀 PRD-V1.0.md              # 产品需求文档
-├── 🔧 API_DOCUMENTATION.md     # API接口文档
-├── 📦 DEPLOYMENT_GUIDE.md      # 部署指南
-└── 📊 PROJECT_RESEARCH_REPORT.md # 项目研究报告
 ```
 
 ## 🎯 项目亮点
