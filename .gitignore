@@ -37,6 +37,10 @@ env/
 *.swp
 *.swo
 
+# Claude Code & Devpace (local config, not for commit)
+.claude/
+.devpace/
+
 # Data files
 data/
 *.db
