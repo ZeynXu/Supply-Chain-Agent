@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     # 使用智谱AI GLM-4.7模型
     llm_provider: str = "zhipu"  # zhipu / openai
     llm_model: str = "glm-4.7"
-    llm_api_key: str = your_api_key
+    llm_api_key: str = ""  # 从 .env 文件加载 SCA_LLM_API_KEY
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     llm_temperature: float = 0.7
     llm_max_tokens: int = 65536

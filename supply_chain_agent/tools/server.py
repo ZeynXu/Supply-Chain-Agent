@@ -1,29 +1,48 @@
 """
 MCP Server for Supply Chain Agent tools.
 
-This module implements the MCP server with mock enterprise APIs.
+This module implements the MCP server with database-backed enterprise APIs.
 """
 
 import asyncio
 import json
 import time
+import random
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
 
 from fastmcp import FastMCP
 
-# Import mock data
+# Import database module
+try:
+    from supply_chain_agent.data.supply_chain_db import (
+        get_order_by_id,
+        get_order_items,
+        get_shipping_info,
+        get_customer_by_id,
+        get_product_by_id,
+        get_statistics,
+        get_sample_orders_for_testing,
+        search_orders,
+    )
+    DATABASE_AVAILABLE = True
+except ImportError:
+    DATABASE_AVAILABLE = False
+
+# Import mock data for templates and categories (still needed)
 from .mock_data.sample_data import (
-    ORDER_DATA,
-    LOGISTICS_DATA,
     CONTRACT_TEMPLATES,
-    WORK_ORDERS,
     WORK_ORDER_TYPES,
     ISSUE_CATEGORIES,
     PRIORITY_LEVELS,
+    WORK_ORDERS,
     SAMPLE_ISSUES
 )
+
+# Fallback mock data for order/logistics queries when database unavailable
+if not DATABASE_AVAILABLE:
+    from .mock_data.sample_data import ORDER_DATA, LOGISTICS_DATA
 
 
 @dataclass
@@ -53,16 +72,71 @@ class MCPServer:
             Query purchase order details.
 
             Args:
-                order_id: Purchase order ID
+                order_id: Purchase order ID (numeric or PO-XXXXX format)
 
             Returns:
-                Order information including status, amount, supplier, etc.
+                Order information including status, amount, customer, etc.
             """
             self._check_health("query_order_status")
 
             # Simulate API delay
-            time.sleep(0.1)
+            time.sleep(0.05)
 
+            # Extract numeric ID from format like "PO-2026-001" or use directly
+            try:
+                if order_id.startswith("PO-"):
+                    # Extract numeric part for database lookup
+                    numeric_id = int(order_id.split("-")[-1])
+                else:
+                    numeric_id = int(order_id)
+            except (ValueError, IndexError):
+                numeric_id = None
+
+            # Try database first if available
+            if DATABASE_AVAILABLE:
+                try:
+                    order = get_order_by_id(numeric_id) if numeric_id else None
+                    if order:
+                        # Get order items
+                        items = get_order_items(order["order_id"])
+                        # Get shipping info
+                        shipping = get_shipping_info(order["order_id"])
+
+                        # Calculate total amount
+                        total_amount = sum(item.get("sales", 0) or 0 for item in items)
+
+                        return {
+                            "order_id": f"PO-{order['order_id']}",
+                            "customer": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
+                            "customer_city": order.get("customer_city"),
+                            "customer_country": order.get("customer_country"),
+                            "status": order.get("order_status"),
+                            "delivery_status": order.get("delivery_status"),
+                            "late_delivery_risk": order.get("late_delivery_risk"),
+                            "amount": total_amount,
+                            "currency": "USD",
+                            "order_date": order.get("order_date"),
+                            "market": order.get("market"),
+                            "items": [
+                                {
+                                    "sku": f"SKU-{item.get('product_card_id')}",
+                                    "description": item.get("product_name", "Unknown"),
+                                    "quantity": item.get("order_item_quantity", 0),
+                                    "unit_price": item.get("order_item_product_price", 0),
+                                    "category": item.get("category_name")
+                                }
+                                for item in items[:5]  # Limit to 5 items
+                            ],
+                            "shipping_mode": shipping.get("shipping_mode") if shipping else None,
+                            "days_for_shipping": shipping.get("days_for_shipping_real") if shipping else None,
+                            "tracking_no": f"SF{order['order_id']:010d}" if order else None,
+                            "warehouse": order.get("order_region"),
+                            "priority": "高" if order.get("late_delivery_risk") else "常规"
+                        }
+                except Exception as e:
+                    print(f"Database query error: {e}")
+
+            # Fallback to mock data
             if order_id in ORDER_DATA:
                 return ORDER_DATA[order_id]
             else:
@@ -84,8 +158,43 @@ class MCPServer:
             self._check_health("get_logistics_trace")
 
             # Simulate API delay
-            time.sleep(0.2)
+            time.sleep(0.1)
 
+            # Try to extract order ID from tracking number format "SF{order_id}"
+            if DATABASE_AVAILABLE and tracking_no.startswith("SF"):
+                try:
+                    numeric_id = int(tracking_no[2:])
+                    order = get_order_by_id(numeric_id)
+                    shipping = get_shipping_info(numeric_id)
+
+                    if order and shipping:
+                        # Generate simulated logistics events based on order status
+                        delivery_status = order.get("delivery_status", "Unknown")
+                        current_location = order.get("order_city", "Unknown")
+                        destination = order.get("customer_city", "Unknown")
+
+                        events = self._generate_logistics_events(
+                            delivery_status, current_location, destination, shipping
+                        )
+
+                        return {
+                            "tracking_no": tracking_no,
+                            "carrier": shipping.get("shipping_mode", "Standard"),
+                            "status": delivery_status,
+                            "current_location": current_location,
+                            "destination": destination,
+                            "sender": order.get("order_region", "Unknown"),
+                            "receiver": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
+                            "weight": round(random.uniform(1, 50), 1),
+                            "volume": f"{random.uniform(0.1, 1.0):.2f}m³",
+                            "events": events,
+                            "eta": self._calculate_eta(delivery_status),
+                            "estimated_days": shipping.get("days_for_shipment_scheduled", 3)
+                        }
+                except Exception as e:
+                    print(f"Database query error: {e}")
+
+            # Fallback to mock data
             if tracking_no in LOGISTICS_DATA:
                 return LOGISTICS_DATA[tracking_no]
             else:
@@ -338,6 +447,112 @@ class MCPServer:
         health = self.tool_health[tool_name]
         health.failure_count += 1
         health.last_failure_time = time.time()
+
+    def _generate_logistics_events(self, delivery_status: str, current_location: str,
+                                    destination: str, shipping: Dict) -> List[Dict]:
+        """Generate simulated logistics events based on delivery status."""
+        from datetime import datetime, timedelta
+        import random
+
+        events = []
+        base_time = datetime.now() - timedelta(days=random.randint(1, 5))
+
+        if "Late" in delivery_status:
+            events = [
+                {
+                    "timestamp": (base_time + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "发货仓库",
+                    "description": "快件已揽收",
+                    "status": "已揽收"
+                },
+                {
+                    "timestamp": (base_time + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "转运中心",
+                    "description": "快件运输中（预计延迟）",
+                    "status": "运输中"
+                },
+                {
+                    "timestamp": (base_time + timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": current_location,
+                    "description": "快件到达中转场（延迟）",
+                    "status": "到达中转场"
+                }
+            ]
+        elif "Advance" in delivery_status:
+            events = [
+                {
+                    "timestamp": base_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "发货仓库",
+                    "description": "快件已揽收",
+                    "status": "已揽收"
+                },
+                {
+                    "timestamp": (base_time + timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": current_location,
+                    "description": "快件提前到达",
+                    "status": "已到达"
+                },
+                {
+                    "timestamp": (base_time + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": destination,
+                    "description": "快件已签收",
+                    "status": "已签收"
+                }
+            ]
+        elif "on time" in delivery_status.lower():
+            events = [
+                {
+                    "timestamp": base_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "发货仓库",
+                    "description": "快件已揽收",
+                    "status": "已揽收"
+                },
+                {
+                    "timestamp": (base_time + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": current_location,
+                    "description": "快件运输中",
+                    "status": "运输中"
+                },
+                {
+                    "timestamp": (base_time + timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": destination,
+                    "description": "快件派送中",
+                    "status": "派送中"
+                }
+            ]
+        else:  # Canceled or other
+            events = [
+                {
+                    "timestamp": base_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "发货仓库",
+                    "description": "快件已揽收",
+                    "status": "已揽收"
+                },
+                {
+                    "timestamp": (base_time + timedelta(hours=4)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "location": "转运中心",
+                    "description": "快件已取消",
+                    "status": "已取消"
+                }
+            ]
+
+        return events
+
+    def _calculate_eta(self, delivery_status: str) -> str:
+        """Calculate estimated time of arrival based on delivery status."""
+        from datetime import datetime, timedelta
+        import random
+
+        if "Late" in delivery_status:
+            eta = datetime.now() + timedelta(days=random.randint(1, 3))
+            return eta.strftime("%Y-%m-%d %H:%M:%S")
+        elif "Advance" in delivery_status:
+            return "已送达"
+        elif "on time" in delivery_status.lower():
+            eta = datetime.now() + timedelta(hours=random.randint(6, 24))
+            return eta.strftime("%Y-%m-%d %H:%M:%S")
+        else:
+            return "已取消"
 
     def run_server(self, port: int = 8001):
         """Run the MCP server (synchronous)."""
