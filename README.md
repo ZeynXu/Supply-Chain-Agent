@@ -128,7 +128,7 @@
 
 - **💬 对话界面**: 自然语言交互，实时响应展示
 - **📊 仪表盘**: 性能指标可视化展示
-- **🔧 工具管理**: MCP工具状态监控和测试
+- **🔧 工具管理**: MCP工具状态监控
 - **⚙️ 系统配置**: 灵活的参数配置
 
 ### 🛡️ 可靠性保障
@@ -151,7 +151,7 @@
 ```bash
 # 1. 克隆项目
 git clone https://github.com/ZeynXu/Supply-Chain-Agent.git
-cd supply-chain-agent
+cd Supply-Chain-Agent
 
 # 2. 创建虚拟环境
 python -m venv env
@@ -169,7 +169,7 @@ cp .env.example .env
 python -m supply_chain_agent --mode web --port 8000
 
 # 6. 启动前端（另开终端）
-cd supply_chain_agent/frontend
+cd Supply-Chain-Agent/supply_chain_agent/frontend
 npm install
 npm run dev
 ```
@@ -339,7 +339,7 @@ graph TD
 
 1. **🤖 四Agent星型拓扑**
    - 总控Agent协调三个专业子Agent，职责清晰
-   - 支持依赖注入，便于测试和解耦
+   - 支持依赖注入，便于解耦
 
 2. **🔄 LangGraph状态机**
    - 8节点状态机，支持中断恢复和Human-in-the-loop
@@ -380,7 +380,6 @@ graph TD
 - 🐛 **Bug报告**: 发现问题，提交Issue
 - ✨ **功能建议**: 提出新功能需求
 - 📚 **文档改进**: 完善文档，提高可读性
-- 🧪 **测试用例**: 增加测试覆盖率
 
 ### 📝 贡献流程
 

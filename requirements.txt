@@ -62,11 +62,8 @@ networkx>=3.0
 matplotlib>=3.7.0
 
 # -------------------------------------------
-# Development & Testing
+# Development Tools
 # -------------------------------------------
-# Pytest - Testing framework
-pytest>=8.0.0
-pytest-asyncio>=0.23.0
 # Black - Code formatter
 black>=24.0.0
 # MyPy - Static type checker

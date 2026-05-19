@@ -16,7 +16,7 @@
 6. [记忆系统设计](#6-记忆系统设计)
 7. [MCP工具系统](#7-mcp工具系统)
 8. [前端界面设计](#8-前端界面设计)
-9. [测试与评估体系](#9-测试与评估体系)
+9. [评估体系与性能指标](#9-评估体系与性能指标)
 10. [配置与部署](#10-配置与部署)
 11. [性能指标分析](#11-性能指标分析)
 12. [项目特色与创新点](#12-项目特色与创新点)
@@ -79,7 +79,6 @@ Supply_Chain_Agent/
 │   │   └── fallback.py           # 降级响应Prompt
 │   ├── monitoring/               # 监控系统
 │   │   └── stability_monitor.py  # 稳定性监控
-│   ├── tests/                    # 测试套件
 │   ├── frontend/                 # React前端
 │   ├── app.py                    # FastAPI应用
 │   ├── run.py                    # 运行脚本
@@ -994,61 +993,9 @@ const useWebSocket = (url: string) => {
 
 ---
 
-## 9. 测试与评估体系
+## 9. 评估体系与性能指标
 
-### 9.1 测试文件结构
-
-```
-tests/
-├── test_agents.py      # Agent单元测试
-├── test_llm_client.py  # LLM客户端测试
-├── test_parser_llm.py  # 解析器LLM集成测试
-├── test_mcp.py         # MCP工具测试
-├── evaluation.py       # 系统评估
-└── run_all_tests.py    # 测试运行器
-```
-
-### 9.2 测试用例示例
-
-**ParserAgent测试**：
-```python
-@pytest.mark.asyncio
-async def test_parser_agent():
-    parser = ParserAgent()
-    test_cases = [
-        "查一下PO-2026-001的货到哪了？",
-        "订单PO-2026-002状态怎么样？",
-        "帮我审批工单WO-2026-001",
-        "创建质量检验工单",
-        "报告物流异常"
-    ]
-    for test_input in test_cases:
-        intent = await parser.parse_intent(test_input)
-        validation = await parser.validate_intent(intent)
-        # 断言验证...
-```
-
-**LLM集成测试**：
-```python
-class TestLLMIntegration:
-    @pytest.mark.asyncio
-    async def test_fuzzy_intent_recognition(self):
-        """测试模糊输入处理"""
-        parser = ParserAgent()
-        result = await parser.parse_intent("帮我看看那个货到哪了")
-        assert result["intent_level_1"] == "状态查询"
-    
-    @pytest.mark.asyncio
-    async def test_fallback_no_fake_data(self):
-        """测试降级响应不含假数据"""
-        client = ToolClient()
-        result = await client._fallback_response(...)
-        assert result.get("data_available") == False
-```
-
-### 9.3 评估指标体系
-
-**四维评估指标**：
+### 9.1 四维评估指标
 
 | 维度 | 指标 | 目标值 | 实际达成 |
 |------|------|--------|----------|
@@ -1057,29 +1004,13 @@ class TestLLMIntegration:
 | **体验指标** | 用户采纳率 | > 40% | **61.2%** |
 | **稳定性指标** | 工具调用可用率 | > 95% | **96.0%** |
 
-### 9.4 评估流程
+### 9.2 性能优化措施
 
-```python
-async def run_evaluation(test_cases: List[TestCase]):
-    """
-    评估流程：
-    1. 加载测试用例（100条标准测试集）
-    2. 执行每个测试用例
-    3. 计算各项指标
-    4. 生成评估报告
-    """
-    results = []
-    for case in test_cases:
-        result = await orchestrator.process(case.input)
-        results.append(evaluate_result(result, case.expected))
-    
-    report = {
-        "success_rate": calculate_success_rate(results),
-        "avg_response_time": calculate_avg_time(results),
-        "user_adoption_rate": calculate_adoption(results),
-        "tool_availability": calculate_availability(results)
-    }
-```
+1. **规则优先策略**: 意图识别优先使用规则引擎，降低LLM调用频率
+2. **熔断器保护**: 防止工具故障级联扩散
+3. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
+4. **并发控制**: ExecutorAgent支持并发工具调用
+5. **检查点持久化**: LangGraph状态持久化，支持断点恢复
 
 ---
 
@@ -1235,13 +1166,7 @@ services:
 - **API文档**: 完整的REST API文档
 - **部署指南**: 详细的部署和运维文档
 
-### 13.3 测试覆盖
-
-- **单元测试**: 各Agent的单元测试
-- **集成测试**: LLM集成测试
-- **评估测试**: 系统级评估测试
-
-### 13.4 代码规范
+### 13.3 代码规范
 
 - **类型注解**: 全面使用Python类型注解
 - **文档字符串**: 关键函数都有docstring
