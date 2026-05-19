@@ -30,7 +30,8 @@
       "Bash(sqlite3 *)",
       "Bash(sqlite3 /root/Supply_Chain_Agent/data/agent_memory.db \"SELECT case_id, intent_type, intent_subtype, user_input, agent_response, tools_used, entities_extracted, processing_time_ms, success, quality_score, quality_level, tags, metadata FROM enhanced_cases ORDER BY case_id;\")",
       "Bash(sqlite3 /root/Supply_Chain_Agent/supply_chain_agent/data/agent_memory.db \"SELECT case_id, intent_type, intent_subtype, user_input, agent_response, tools_used, entities_extracted, processing_time_ms, success, quality_score, quality_level, tags, metadata FROM enhanced_cases ORDER BY case_id;\")",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Skill(devpace:pace-test)"
     ]
   }
 }
