@@ -551,9 +551,10 @@ def get_product_by_id(product_card_id: int) -> Optional[Dict[str, Any]]:
         cursor = conn.cursor()
 
         cursor.execute("""
-            SELECT p.*, c.category_name
+            SELECT p.*, c.category_name, d.department_name
             FROM products p
             LEFT JOIN categories c ON p.product_category_id = c.category_id
+            LEFT JOIN departments d ON p.product_category_id = d.department_id
             WHERE p.product_card_id = ?
         """, (product_card_id,))
 
@@ -561,6 +562,117 @@ def get_product_by_id(product_card_id: int) -> Optional[Dict[str, Any]]:
         if row:
             return dict(row)
         return None
+
+
+def get_orders_by_customer(customer_id: int, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    """Get orders for a customer with pagination, ordered by order_date DESC."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT order_id, order_date, order_status, delivery_status,
+                   benefit_per_order, market
+            FROM orders
+            WHERE customer_id = ?
+            ORDER BY order_date DESC
+            LIMIT ? OFFSET ?
+        """, (customer_id, limit, offset))
+
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_customer_order_count(customer_id: int) -> int:
+    """Get total order count for a customer."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT COUNT(*) FROM orders WHERE customer_id = ?
+        """, (customer_id,))
+
+        return cursor.fetchone()[0]
+
+
+def get_customer_statistics(customer_id: int) -> Dict[str, Any]:
+    """
+    Get aggregated statistics for customer risk assessment.
+
+    Metrics calculated:
+    - total_sales: Max sales_per_customer (cumulative value)
+    - total_orders: Total order count
+    - delayed_orders: Orders with late_delivery_risk=1
+    - cancelled_orders: Orders with delivery_status='Shipping canceled'
+    - avg_order_profit: Average order_profit_per_order
+    - late_delivery_rate: delayed_orders / total_orders
+    - current_occupied_amount: Sum of order_item_total for pending orders
+    - current_pending_orders: Count of pending orders
+    """
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        # Total orders and sales
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_orders,
+                MAX(sales_per_customer) as total_sales,
+                AVG(order_profit_per_order) as avg_order_profit
+            FROM orders
+            WHERE customer_id = ?
+        """, (customer_id,))
+
+        row = cursor.fetchone()
+        total_orders = row[0] if row else 0
+        total_sales = row[1] if row and row[1] else 0
+        avg_order_profit = row[2] if row and row[2] else 0
+
+        # Delayed orders - late_delivery_risk is in orders table
+        cursor.execute("""
+            SELECT COUNT(*) as delayed_orders
+            FROM orders
+            WHERE customer_id = ? AND late_delivery_risk = 1
+        """, (customer_id,))
+
+        delayed_orders = cursor.fetchone()[0]
+
+        # Cancelled orders
+        cursor.execute("""
+            SELECT COUNT(*) as cancelled_orders
+            FROM orders
+            WHERE customer_id = ? AND delivery_status = 'Shipping canceled'
+        """, (customer_id,))
+
+        cancelled_orders = cursor.fetchone()[0]
+
+        # Current pending orders and occupied amount
+        # Pending statuses: PENDING, PROCESSING, PENDING_PAYMENT, PAYMENT_REVIEW, ON_HOLD
+        pending_statuses = ('PENDING', 'PROCESSING', 'PENDING_PAYMENT', 'PAYMENT_REVIEW', 'ON_HOLD')
+
+        cursor.execute("""
+            SELECT
+                COUNT(DISTINCT o.order_id) as pending_orders,
+                COALESCE(SUM(oi.order_item_total), 0) as occupied_amount
+            FROM orders o
+            LEFT JOIN order_items oi ON o.order_id = oi.order_id
+            WHERE o.customer_id = ? AND o.order_status IN (?, ?, ?, ?, ?)
+        """, (customer_id, *pending_statuses))
+
+        row = cursor.fetchone()
+        current_pending_orders = row[0] if row else 0
+        current_occupied_amount = row[1] if row and row[1] else 0
+
+        # Calculate late delivery rate
+        late_delivery_rate = delayed_orders / total_orders if total_orders > 0 else 0
+
+        return {
+            "total_sales": round(total_sales, 2) if total_sales else 0,
+            "total_orders": total_orders,
+            "delayed_orders": delayed_orders,
+            "cancelled_orders": cancelled_orders,
+            "avg_order_profit": round(avg_order_profit, 2) if avg_order_profit else 0,
+            "late_delivery_rate": round(late_delivery_rate, 3),
+            "current_occupied_amount": round(current_occupied_amount, 2) if current_occupied_amount else 0,
+            "current_pending_orders": current_pending_orders
+        }
 
 
 def get_statistics() -> Dict[str, Any]:
@@ -660,10 +772,86 @@ def get_sample_orders_for_testing(limit: int = 10) -> List[Dict[str, Any]]:
 
 # ============== Work Order Functions ==============
 
-def create_work_order(work_order_id: str, work_type: str, description: str,
-                      priority: str = "中", order_id: str = None,
-                      assigned_to: str = None, created_by: str = "Agent System") -> Dict[str, Any]:
-    """Create a new work order."""
+# Work type to assigned group mapping
+WORK_TYPE_ASSIGNMENT = {
+    "审批": "审批组",
+    "异常处理": "异常处理组",
+    "退款": "财务组",
+    "调拨": "仓储组",
+    "质检": "质检组",
+    "其他": "综合事务组"
+}
+
+# Valid work types
+VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
+
+# Valid priorities
+VALID_PRIORITIES = ["高", "中", "低"]
+
+# Valid work order statuses
+VALID_WORK_ORDER_STATUSES = ["待处理", "待审批", "处理中", "已通过", "已拒绝", "已关闭"]
+
+
+def generate_work_order_id() -> str:
+    """Generate a unique work order ID in format WO-YYYYMMDD-XXX."""
+    today = datetime.now().strftime("%Y%m%d")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        # Get the count of work orders created today
+        cursor.execute("""
+            SELECT COUNT(*) FROM work_orders
+            WHERE work_order_id LIKE ?
+        """, (f"WO-{today}-%",))
+        count = cursor.fetchone()[0] + 1
+
+        return f"WO-{today}-{count:03d}"
+
+
+def create_work_order(
+    work_type: str,
+    description: str,
+    priority: str = "中",
+    order_id: str = None,
+    assigned_to: str = None,
+    created_by: str = "Agent System",
+    work_order_id: str = None,
+    validate: bool = True
+) -> Dict[str, Any]:
+    """
+    Create a new work order.
+
+    Args:
+        work_type: Type of work (审批, 异常处理, 退款, 调拨, 质检, 其他)
+        description: Detailed description of the work
+        priority: Priority level (高, 中, 低), default 中
+        order_id: Related order ID (optional)
+        assigned_to: Assignee (optional, auto-assigned if not specified)
+        created_by: Creator identifier, default "Agent System"
+        work_order_id: Custom work order ID (optional, auto-generated if not specified)
+        validate: Whether to validate work_type and priority, default True
+
+    Returns:
+        Created work order dictionary
+
+    Raises:
+        ValueError: If validate=True and work_type or priority is invalid
+    """
+    # Validate if requested
+    if validate:
+        if work_type not in VALID_WORK_TYPES:
+            raise ValueError(f"无效的工单类型: {work_type}，有效类型: {VALID_WORK_TYPES}")
+        if priority not in VALID_PRIORITIES:
+            raise ValueError(f"无效的优先级: {priority}，有效优先级: {VALID_PRIORITIES}")
+
+    # Auto-assign if not specified
+    if not assigned_to:
+        assigned_to = WORK_TYPE_ASSIGNMENT.get(work_type, "综合事务组")
+
+    # Generate work order ID if not provided
+    if not work_order_id:
+        work_order_id = generate_work_order_id()
+
     with get_connection() as conn:
         cursor = conn.cursor()
 
@@ -671,8 +859,9 @@ def create_work_order(work_order_id: str, work_type: str, description: str,
         timeline = json.dumps([{
             "timestamp": now,
             "actor": created_by,
-            "action": "创建工单"
-        }])
+            "action": "创建工单",
+            "details": f"工单类型: {work_type}, 优先级: {priority}"
+        }], ensure_ascii=False)
 
         cursor.execute("""
             INSERT INTO work_orders
@@ -684,7 +873,98 @@ def create_work_order(work_order_id: str, work_type: str, description: str,
 
         conn.commit()
 
-        return get_work_order(work_order_id)
+    return get_work_order(work_order_id)
+
+
+def approve_work_order(
+    work_order_id: str,
+    action: str,
+    comment: str = "",
+    approver: str = "Agent System"
+) -> Dict[str, Any]:
+    """
+    Approve, reject, or escalate a work order.
+
+    Args:
+        work_order_id: Work order ID
+        action: Action to take (approve, reject, escalate)
+        comment: Approval comment
+        approver: Approver identifier
+
+    Returns:
+        Updated work order dictionary
+
+    Raises:
+        ValueError: If action is invalid or work order status doesn't allow operation
+    """
+    # Validate action
+    valid_actions = ["approve", "reject", "escalate"]
+    if action not in valid_actions:
+        raise ValueError(f"无效的操作: {action}，有效操作: {valid_actions}")
+
+    # Get current work order
+    work_order = get_work_order(work_order_id)
+    if not work_order:
+        raise ValueError(f"工单不存在: {work_order_id}")
+
+    # Check if status allows approval
+    current_status = work_order.get("status")
+    if current_status not in ["待处理", "待审批"]:
+        raise ValueError(f"工单状态 '{current_status}' 不允许审批操作")
+
+    # Determine new status
+    status_map = {
+        "approve": "已通过",
+        "reject": "已拒绝",
+        "escalate": "待审批"
+    }
+    new_status = status_map[action]
+
+    # Action description in Chinese
+    action_desc = {
+        "approve": "审批通过",
+        "reject": "审批拒绝",
+        "escalate": "升级审批"
+    }
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Update status
+        cursor.execute("""
+            UPDATE work_orders
+            SET status = ?, updated_at = ?
+            WHERE work_order_id = ?
+        """, (new_status, now, work_order_id))
+
+        # Add timeline event
+        timeline = work_order.get("timeline", [])
+        if isinstance(timeline, str):
+            try:
+                timeline = json.loads(timeline)
+            except:
+                timeline = []
+
+        timeline_event = {
+            "timestamp": now,
+            "actor": approver,
+            "action": action_desc[action]
+        }
+        if comment:
+            timeline_event["comment"] = comment
+
+        timeline.append(timeline_event)
+
+        cursor.execute("""
+            UPDATE work_orders SET timeline = ?
+            WHERE work_order_id = ?
+        """, (json.dumps(timeline, ensure_ascii=False), work_order_id))
+
+        conn.commit()
+
+    return get_work_order(work_order_id)
 
 
 def get_work_order(work_order_id: str) -> Optional[Dict[str, Any]]:
@@ -797,10 +1077,80 @@ def add_work_order_timeline_event(work_order_id: str, actor: str, action: str) -
 
 # ============== Issue Functions ==============
 
-def create_issue(issue_id: str, issue_type: str, description: str,
-                 urgency: str = "中", affected_order: str = None,
-                 reported_by: str = "Agent System") -> Dict[str, Any]:
-    """Create a new issue report."""
+# Valid issue types
+VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
+
+# Valid urgency levels
+VALID_URGENCIES = ["高", "中", "低"]
+
+# Issue type to assigned group mapping
+ISSUE_TYPE_ASSIGNMENT = {
+    "物流延迟": "异常处理组",
+    "库存异常": "仓储组",
+    "质量缺陷": "质检组",
+    "数据错误": "技术组",
+    "客户投诉": "客服组",
+    "其他": "异常处理组"
+}
+
+
+def generate_issue_id() -> str:
+    """Generate a unique issue ID in format ISS-YYYYMMDD-XXX."""
+    today = datetime.now().strftime("%Y%m%d")
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        # Get the count of issues created today
+        cursor.execute("""
+            SELECT COUNT(*) FROM issues
+            WHERE issue_id LIKE ?
+        """, (f"ISS-{today}-%",))
+        count = cursor.fetchone()[0] + 1
+
+        return f"ISS-{today}-{count:03d}"
+
+
+def report_issue(
+    issue_type: str,
+    description: str,
+    urgency: str = "中",
+    affected_order: str = None,
+    reported_by: str = "Agent System",
+    issue_id: str = None,
+    validate: bool = True
+) -> Dict[str, Any]:
+    """
+    Report a new issue.
+
+    Args:
+        issue_type: Type of issue (物流延迟, 库存异常, 质量缺陷, 数据错误, 客户投诉, 其他)
+        description: Detailed description of the issue
+        urgency: Urgency level (高, 中, 低), default 中
+        affected_order: Affected order ID (optional)
+        reported_by: Reporter identifier, default "Agent System"
+        issue_id: Custom issue ID (optional, auto-generated if not specified)
+        validate: Whether to validate issue_type and urgency, default True
+
+    Returns:
+        Created issue dictionary
+
+    Raises:
+        ValueError: If validate=True and issue_type or urgency is invalid
+    """
+    # Validate if requested
+    if validate:
+        if issue_type not in VALID_ISSUE_TYPES:
+            raise ValueError(f"无效的问题类型: {issue_type}，有效类型: {VALID_ISSUE_TYPES}")
+        if urgency not in VALID_URGENCIES:
+            raise ValueError(f"无效的紧急程度: {urgency}，有效紧急程度: {VALID_URGENCIES}")
+
+    # Auto-assign based on issue type
+    assigned_to = ISSUE_TYPE_ASSIGNMENT.get(issue_type, "异常处理组")
+
+    # Generate issue ID if not provided
+    if not issue_id:
+        issue_id = generate_issue_id()
+
     with get_connection() as conn:
         cursor = conn.cursor()
 
@@ -810,19 +1160,19 @@ def create_issue(issue_id: str, issue_type: str, description: str,
             "user": reported_by,
             "action": "创建问题报告",
             "details": f"自动创建{issue_type}问题报告"
-        }])
+        }], ensure_ascii=False)
 
         cursor.execute("""
             INSERT INTO issues
             (issue_id, issue_type, description, urgency, affected_order,
              reported_by, status, assigned_to, created_at, updated_at, updates)
-            VALUES (?, ?, ?, ?, ?, ?, '待处理', '异常处理组', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, '待处理', ?, ?, ?, ?)
         """, (issue_id, issue_type, description, urgency, affected_order,
-              reported_by, now, now, updates))
+              reported_by, assigned_to, now, now, updates))
 
         conn.commit()
 
-        return get_issue(issue_id)
+    return get_issue(issue_id)
 
 
 def get_issue(issue_id: str) -> Optional[Dict[str, Any]]:

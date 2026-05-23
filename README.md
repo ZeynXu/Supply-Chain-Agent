@@ -205,15 +205,11 @@ pip install -r requirements.txt
 # 4. 配置环境变量
 # 编辑 .env 文件，配置API密钥（文件已存在，直接修改即可）
 
-# 5. 初始化数据
-python -m supply_chain_agent.data.init_data
-
-# 6. 启动后端服务
+# 5. 启动后端服务
 python -m supply_chain_agent --mode web --port 8000
 
-# 7. 启动前端（另开终端）
+# 6. 启动前端（另开终端）
 cd supply_chain_agent/frontend
-npm install
 npm run dev
 ```
 

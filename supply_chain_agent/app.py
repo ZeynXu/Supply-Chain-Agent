@@ -534,13 +534,13 @@ def create_app() -> FastAPI:
             "long_term": {
                 "vector_store": {
                     "type": "chromadb",
-                    "collections": ["cases", "faq", "sop"],
-                    "total_vectors": 1250
+                    "collections": ["sop_manual", "faq", "knowledge_base"],
+                    "total_vectors": 10
                 },
                 "relational_store": {
                     "type": "sqlite",
-                    "tables": ["operations", "sessions", "audit_logs"],
-                    "total_records": 4567
+                    "tables": ["work_order_records", "tool_usage_stats", "memory_items"],
+                    "total_records": 0
                 }
             },
             "summary": summary,
@@ -552,30 +552,24 @@ def create_app() -> FastAPI:
     async def search_memory(request: dict):
         """Search long-term memory."""
         query = request.get("query", "")
-        collection = request.get("collection", "cases")
+        collection = request.get("collection", "sop")
         limit = request.get("limit", 5)
 
         if not query:
             raise HTTPException(status_code=400, detail="Query is required")
 
-        # 使用 memory_manager 搜索
+        # 根据 collection 类型搜索
+        results = []
         try:
-            results = memory_manager.search_similar_cases(query, limit=limit)
-        except Exception:
-            # 如果搜索失败，返回模拟结果
-            results = [
-                {
-                    "id": "case-001",
-                    "title": "物流延迟处理案例",
-                    "content": "当物流延迟超过24小时时，建议联系承运商确认原因。",
-                    "similarity": 0.85,
-                    "metadata": {
-                        "intent": "异常上报",
-                        "tags": ["物流", "延迟"],
-                        "created_at": "2026-03-15"
-                    }
-                }
-            ]
+            if collection == "sop":
+                results = memory_manager.long_term.search_sop(query, limit=limit)
+            elif collection == "faq":
+                results = memory_manager.long_term.search_faq(query, limit=limit)
+            else:
+                # 默认搜索 SOP
+                results = memory_manager.long_term.search_sop(query, limit=limit)
+        except Exception as e:
+            results = []
 
         return {
             "query": query,
@@ -860,14 +854,13 @@ def create_app() -> FastAPI:
     @app.post("/api/workorders")
     async def create_workorder(data: dict):
         """创建工单"""
-        order_id = f"WO-{datetime.now().strftime('%Y')}-{uuid.uuid4().hex[:3].upper()}"
         workorder = create_work_order(
-            work_order_id=order_id,
-            work_type=data.get("type", "quality_inspection"),
+            work_type=data.get("type", "其他"),
             description=data.get("description", ""),
             priority=data.get("priority", "中"),
             order_id=data.get("related_order"),
-            assigned_to=data.get("assigned_to")
+            assigned_to=data.get("assigned_to"),
+            validate=False  # 兼容旧的自定义工单类型
         )
         return workorder
 

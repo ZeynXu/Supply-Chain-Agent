@@ -25,12 +25,13 @@ from .supply_chain_db import (
     get_statistics,
     # Work orders
     create_work_order,
+    approve_work_order,
     get_work_order,
     list_work_orders,
     update_work_order,
     add_work_order_timeline_event,
     # Issues
-    create_issue,
+    report_issue,
     get_issue,
     list_issues,
     # Entity mappings
@@ -76,12 +77,13 @@ __all__ = [
     "get_statistics",
     # Work orders
     "create_work_order",
+    "approve_work_order",
     "get_work_order",
     "list_work_orders",
     "update_work_order",
     "add_work_order_timeline_event",
     # Issues
-    "create_issue",
+    "report_issue",
     "get_issue",
     "list_issues",
     # Entity mappings

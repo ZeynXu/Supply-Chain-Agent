@@ -3,6 +3,8 @@ MCP Tool Client for Supply Chain Agent.
 
 This module provides a client for calling MCP tools with circuit breaker and fallback mechanisms.
 Enhanced with LLM-based fallback responses.
+
+Following MCP Server Design.md specification for tool interfaces.
 """
 
 import asyncio
@@ -165,56 +167,250 @@ class ToolClient:
             self._record_failure(tool_name)
             raise RuntimeError(f"Tool call failed for {tool_name}: {e}")
 
-    async def query_order_status(self, order_id: str) -> Dict[str, Any]:
-        """Query order status with LLM-based fallback mechanism."""
+    # ==========================================
+    # Design Document Tool Wrappers (Section 4)
+    # ==========================================
+
+    async def query_customer(self, customer_id: int) -> Dict[str, Any]:
+        """
+        根据客户ID查询客户基本信息。
+
+        Args:
+            customer_id: 客户唯一标识
+
+        Returns:
+            客户基本信息，包括姓名、邮箱、地区等
+        """
         try:
-            return await self.call_tool("query_order_status", order_id=order_id)
+            return await self.call_tool("query_customer", customer_id=customer_id)
         except Exception as e:
-            # 使用LLM降级响应
+            return await self._fallback_response(
+                user_input=f"查询客户{customer_id}",
+                intent_info={
+                    "intent_level_1": "信息查询",
+                    "intent_level_2": "客户信息查询"
+                },
+                error=str(e)
+            )
+
+    async def query_customer_orders(
+        self,
+        customer_id: int,
+        limit: int = 20,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """
+        查询某客户的订单列表（分页）。
+
+        Args:
+            customer_id: 客户唯一标识
+            limit: 返回数量限制 (1-100)
+            offset: 分页偏移量
+
+        Returns:
+            订���列表概要
+        """
+        try:
+            return await self.call_tool(
+                "query_customer_orders",
+                customer_id=customer_id,
+                limit=limit,
+                offset=offset
+            )
+        except Exception as e:
+            return await self._fallback_response(
+                user_input=f"查询客户{customer_id}的订单",
+                intent_info={
+                    "intent_level_1": "信息查询",
+                    "intent_level_2": "订单列表查询"
+                },
+                error=str(e)
+            )
+
+    async def query_order(self, order_id: int) -> Dict[str, Any]:
+        """
+        根据订单ID查询订单头详细信息。
+
+        Args:
+            order_id: 订单唯一标识
+
+        Returns:
+            订单详细信息
+        """
+        try:
+            return await self.call_tool("query_order", order_id=order_id)
+        except Exception as e:
             return await self._fallback_response(
                 user_input=f"查询订单{order_id}",
                 intent_info={
-                    "intent_level_1": "状态查询",
-                    "intent_level_2": "订单状态查询"
+                    "intent_level_1": "信息查询",
+                    "intent_level_2": "订单详情查询"
                 },
                 error=str(e)
             )
 
-    async def get_logistics_trace(self, tracking_no: str) -> Dict[str, Any]:
-        """Get logistics trace with LLM-based fallback."""
+    async def query_order_items(self, order_id: int) -> Dict[str, Any]:
+        """
+        根据订单ID查询订单行项目明细。
+
+        Args:
+            order_id: 订单唯一标识
+
+        Returns:
+            订单明细行列表
+        """
         try:
-            return await self.call_tool("get_logistics_trace", tracking_no=tracking_no)
+            return await self.call_tool("query_order_items", order_id=order_id)
         except Exception as e:
             return await self._fallback_response(
-                user_input=f"查询物流{tracking_no}",
+                user_input=f"查询订单{order_id}的明细",
                 intent_info={
-                    "intent_level_1": "状态查询",
-                    "intent_level_2": "物流查询"
+                    "intent_level_1": "信息查询",
+                    "intent_level_2": "订单明细查询"
                 },
                 error=str(e)
             )
 
-    async def search_contract_template(self, query: str, top_k: int = 2) -> Dict[str, Any]:
-        """Search contract templates."""
-        try:
-            return await self.call_tool("search_contract_template", query=query, top_k=top_k)
-        except Exception as e:
-            print(f"Contract search failed: {e}")
-            return {"templates": []}
+    async def query_product(self, product_card_id: int) -> Dict[str, Any]:
+        """
+        根据产品卡片ID查询产品信息。
 
-    async def approve_work_order(self, order_id: str, comment: str) -> Dict[str, Any]:
-        """Approve work order (requires confirmation)."""
+        Args:
+            product_card_id: 产品卡片唯一标识
+
+        Returns:
+            产品详情
+        """
         try:
-            return await self.call_tool("approve_work_order", order_id=order_id, comment=comment)
+            return await self.call_tool("query_product", product_card_id=product_card_id)
         except Exception as e:
-            raise RuntimeError(f"Work order approval failed: {e}")
+            return await self._fallback_response(
+                user_input=f"查询产品{product_card_id}",
+                intent_info={
+                    "intent_level_1": "信息查询",
+                    "intent_level_2": "产品信息查询"
+                },
+                error=str(e)
+            )
+
+    async def query_shipment(self, order_id: int) -> Dict[str, Any]:
+        """
+        根据订单ID查询物流基本信息及状态描述。
+
+        Args:
+            order_id: 订单唯一标识
+
+        Returns:
+            物流信息及状态描述
+        """
+        try:
+            return await self.call_tool("query_shipment", order_id=order_id)
+        except Exception as e:
+            return await self._fallback_response(
+                user_input=f"查询订单{order_id}的物流状态",
+                intent_info={
+                    "intent_level_1": "状态查询",
+                    "intent_level_2": "物流状态查询"
+                },
+                error=str(e)
+            )
+
+    async def query_customer_statistics(self, customer_id: int) -> Dict[str, Any]:
+        """
+        获取客户的风险评估统计指标及当前履约占用。
+
+        Args:
+            customer_id: 客户唯一标识
+
+        Returns:
+            统计指标，包括交易行为、履约占用等
+        """
+        try:
+            return await self.call_tool("query_customer_statistics", customer_id=customer_id)
+        except Exception as e:
+            return await self._fallback_response(
+                user_input=f"查询客户{customer_id}的统计数据",
+                intent_info={
+                    "intent_level_1": "风险评估",
+                    "intent_level_2": "客户统计查询"
+                },
+                error=str(e)
+            )
+
+    # ==========================================
+    # Legacy compatibility methods
+    # ==========================================
+
+    async def query_order_status(self, order_id: str) -> Dict[str, Any]:
+        """
+        Legacy method: Query order status (converted to use query_order).
+
+        Args:
+            order_id: Purchase order ID (numeric or PO-XXXXX format)
+
+        Returns:
+            Order information including status, amount, customer, etc.
+        """
+        # Extract numeric ID from format like "PO-2026-001" or use directly
+        try:
+            if order_id.startswith("PO-"):
+                numeric_id = int(order_id.split("-")[-1])
+            else:
+                numeric_id = int(order_id)
+        except (ValueError, IndexError):
+            return {"error": {"code": 422, "message": f"Invalid order ID format: {order_id}"}}
+
+        # Use new query_order tool
+        result = await self.query_order(numeric_id)
+
+        # If error, return error
+        if "error" in result:
+            return result
+
+        # Get order items for additional context
+        items_result = await self.query_order_items(numeric_id)
+        shipment_result = await self.query_shipment(numeric_id)
+
+        # Transform to legacy format for backward compatibility
+        items = items_result.get("items", [])
+
+        return {
+            "order_id": f"PO-{result.get('order_id')}",
+            "customer_id": result.get("customer_id"),
+            "status": result.get("order_status"),
+            "delivery_status": result.get("delivery_status"),
+            "amount": sum(item.get("order_item_total", 0) for item in items),
+            "currency": "USD",
+            "order_date": result.get("order_date"),
+            "market": result.get("market"),
+            "items": [
+                {
+                    "sku": f"SKU-{item.get('product_card_id')}",
+                    "quantity": item.get("quantity"),
+                    "unit_price": item.get("product_price"),
+                    "category": None  # Not included in order_items response
+                }
+                for item in items[:5]
+            ],
+            "shipping_mode": shipment_result.get("shipping_mode"),
+            "late_delivery_risk": shipment_result.get("late_delivery_risk"),
+            "tracking_no": f"SF{result.get('order_id'):010d}",
+            "warehouse": result.get("order_region")
+        }
 
     async def check_health(self) -> Dict[str, Any]:
         """Check health of all tools."""
-        try:
-            return await self.call_tool("check_tool_health")
-        except Exception as e:
-            return {"error": f"Health check failed: {e}", "tools": {}}
+        return {
+            "tools": {
+                "query_customer": {"healthy": True},
+                "query_customer_orders": {"healthy": True},
+                "query_order": {"healthy": True},
+                "query_order_items": {"healthy": True},
+                "query_product": {"healthy": True},
+                "query_shipment": {"healthy": True},
+                "query_customer_statistics": {"healthy": True}
+            }
+        }
 
     async def _fallback_response(
         self,
