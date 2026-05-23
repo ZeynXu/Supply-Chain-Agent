@@ -1,0 +1,51 @@
+标准实体名,别名（口语化表达）,说明
+order_id,订单号、订单编号、单号、ID、ORDER ID、OrderId、合同号、交易编号、流水号、订单ID,订单唯一标识符
+order_date,下单日期、下单时间、订单日期、购买日期、什么时候买的、哪天下的单、购买时间,订单创建日期
+order_status,订单状态、处理状态、进度、走到哪了、怎么样了、现在什么状态、完成没、待付款还是已发货,订单当前状态（COMPLETE/PENDING等）
+delivery_status,发货状态、配送状态、物流状态、送货情况、是否已发货、签收状态,发货结果（Advance shipping等）
+customer_id,客户编号、客户ID、用户ID、会员号、客户代码、账号、客户编码,客户唯一标识
+customer_name,客户名称、姓名、用户名、客户名、下单人、购买人、联系人、收货人,客户姓名（通常为first_name+last_name）
+customer_fname,名、First Name、名字、客户名字,客户的名字
+customer_lname,姓、Last Name、姓氏、客户姓氏,客户的姓氏
+customer_email,邮箱、电子邮件、邮件地址、e-mail、客户邮箱、联系邮箱,客户电子邮箱
+customer_segment,客户类型、用户类型、客户分类、客户等级、细分市场、客群,Consumer/Corporate/Home Office
+customer_city,客户城市、所在城市、客户所在城市、客户所在地、城市,客户所在城市
+customer_country,客户国家、所在国家、客户所在国,客户所在国家
+customer_state,客户州/省、州、省份、客户所在州,客户所在州/省
+customer_zipcode,邮编、邮政编码、客户邮编、ZIP,客户邮政编码
+product_card_id,产品ID、商品编号、产品代码、货号、产品编码、SKU,产品唯一标识
+product_name,产品名、商品名称、品名、名称、叫什么、产品,产品名称
+product_category_id,产品类别ID、分类编号、类别代码,产品品类ID
+category_name,产品类别、分类、品类、产品类型、商品分类,产品品类名称
+product_price,产品价格、单价、售价、定价、多少钱,产品单价
+product_status,库存状态、是否有货、有货没、在售状态、是否可售、库存,0：可用，1：不可用
+order_item_id,订单行ID、明细编号、条目号,订单明细行标识
+order_item_quantity,数量、购买数量、件数、个数、几件、多少个,订单中某产品的数量
+order_item_total,订单总金额、合计金额、总价、总金额、总计、成交价,订单项总金额
+order_item_discount,折扣额、优惠金额、减了多少,订单项的折扣金额
+order_item_discount_rate,折扣率、折扣比例、几折、折扣百分比,折扣率
+order_profit_per_order,订单利润、毛利、这一单赚了多少、利润,该订单的利润
+benefit_per_order,订单收益、收益、挣了多少,每订单收益
+sales_per_customer,客户累计消费、历史总消费、累计购买额,该客户的历史总销售额
+sales,销售额、销售收入、卖了多少、交易额,该订单项的销售额
+shipping_mode,运输方式、配送方式、物流方式、送货方式、快递方式,Standard Class等
+shipping_date,发货日期、发货时间、什么时候发的、寄出日期,实际发货日期时间
+days_for_shipping_real,实际运输天数、实际几天到的、实际运送天数、物流走了几天,实际运输所花天数
+days_for_shipment_scheduled,预计运输天数、计划运送天数、原定几天,计划运输天数
+late_delivery_risk,延迟风险、会不会延迟、有没有延迟风险、是否可能延迟,1：有延迟风险，0：无
+tracking_number,运单号、快递单号、物流单号、跟踪号、快件号、物流编号、运单编号,物流轨迹追踪号码（由MCP生成）
+order_city,收货城市、送达城市、目的地城市,订单收货城市
+order_country,收货国家、目的地国家,订单收货国家
+order_region,收货区域、区域、地区、大区,订单目的区域（如Southeast Asia）
+market,市场、销售市场、所在市场、目标市场,市场分类（Africa/Europe等）
+department_id,部门编号、部门ID、所属部门代码,商店所属部门代码
+department_name,部门名称、部门、所属部门,部门名称
+latitude,纬度、坐标纬度,店铺纬度
+longitude,经度、坐标经度,店铺经度
+type,交易类型、支付类型、付款方式、订单类型,交易类型（DEBIT/TRANSFER/CASH/PAYMENT）
+order_profit_ratio,订单利润率、毛利率,利润占销售额比率
+product_description,产品描述、商品描述、介绍、详情,产品描述文本
+order_item_profit_ratio,订单行利润率、单品利润率,单个订单项的利润率
+order_date_range,下单时间段、时间范围、从X到Y的订单,用于查询的时间区间
+amount_range,金额范围、价格区间,用于按金额筛选
+delivery_lead_time,交货周期、多久能到、送货要几天,订单到交货所需时间

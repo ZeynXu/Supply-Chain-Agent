@@ -3,6 +3,7 @@ Parser Agent (解析师)
 
 Responsible for understanding user intent and extracting relevant information.
 Enhanced with LLM integration for fuzzy input handling.
+Entity mappings loaded from database (dataset/OtherData/EntityMapping.csv).
 """
 
 from typing import Dict, Any, List, Optional
@@ -78,7 +79,7 @@ class ParserAgent:
         }
     }
 
-    # Entity extraction patterns
+    # Entity extraction patterns (base patterns)
     ENTITY_PATTERNS = {
         "order_id": r"(PO|订单)[-_]?\d{4}[-_]?\d{3,}",
         "tracking_no": r"[A-Z]{2}\d{9,11}[A-Z]?|\d{12,14}",
@@ -113,6 +114,58 @@ class ParserAgent:
         # LLM客户端
         self._llm_client = llm_client
         self.llm_enabled = LLM_AVAILABLE and settings.intent_rule_first
+
+        # Load entity mappings from database
+        self._entity_mappings = None
+        self._load_entity_mappings()
+
+    def _load_entity_mappings(self):
+        """Load entity mappings from database."""
+        try:
+            from supply_chain_agent.data.supply_chain_db import get_entity_mappings
+            mappings = get_entity_mappings()
+            if mappings:
+                self._entity_mappings = mappings
+                # Extend entity patterns with loaded mappings
+                self._extend_entity_patterns()
+        except Exception as e:
+            # Database may not be initialized yet
+            pass
+
+    def _extend_entity_patterns(self):
+        """Extend entity patterns with loaded mappings."""
+        if not self._entity_mappings:
+            return
+
+        # Add patterns for common aliases
+        for standard_name, aliases in self._entity_mappings.items():
+            # Skip if already have a pattern for this entity
+            if standard_name in self.ENTITY_PATTERNS:
+                continue
+
+            # Create a pattern that matches any of the aliases
+            # This helps with Chinese natural language queries
+            # For now, we just store the mappings for lookup
+            pass
+
+    def resolve_entity_alias(self, alias: str) -> Optional[str]:
+        """
+        Resolve an alias to its standard entity name.
+
+        Args:
+            alias: The alias to resolve
+
+        Returns:
+            Standard entity name or None
+        """
+        if not self._entity_mappings:
+            return None
+
+        for standard_name, aliases in self._entity_mappings.items():
+            if alias in aliases or alias == standard_name:
+                return standard_name
+
+        return None
 
     @property
     def llm_client(self) -> Optional['LLMClient']:

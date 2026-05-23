@@ -15,7 +15,7 @@ from supply_chain_agent.memory.vector_store import memory_manager
 class CheckpointManager:
     """Manages checkpoints for LangGraph state."""
 
-    def __init__(self, checkpoint_dir: str = "./data/checkpoints"):
+    def __init__(self, checkpoint_dir: str = "./supply_chain_agent/data/checkpoints"):
         self.checkpoint_dir = checkpoint_dir
         self._ensure_directory()
 

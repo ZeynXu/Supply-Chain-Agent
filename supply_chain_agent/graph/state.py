@@ -59,7 +59,7 @@ class AgentState(TypedDict):
 class StateManager:
     """Manages the global state for the Agent workflow."""
 
-    def __init__(self, db_path: str = "./data/checkpoints.db"):
+    def __init__(self, db_path: str = "./supply_chain_agent/data/checkpoints.db"):
         """
         Initialize the state manager.
 

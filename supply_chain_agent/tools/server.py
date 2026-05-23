@@ -2,6 +2,8 @@
 MCP Server for Supply Chain Agent tools.
 
 This module implements the MCP server with database-backed enterprise APIs.
+All data comes from the database loaded from /root/Supply-Chain-Agent/dataset/.
+No mock data is used.
 """
 
 import asyncio
@@ -11,38 +13,37 @@ import random
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 from fastmcp import FastMCP
 
 # Import database module
-try:
-    from supply_chain_agent.data.supply_chain_db import (
-        get_order_by_id,
-        get_order_items,
-        get_shipping_info,
-        get_customer_by_id,
-        get_product_by_id,
-        get_statistics,
-        get_sample_orders_for_testing,
-        search_orders,
-    )
-    DATABASE_AVAILABLE = True
-except ImportError:
-    DATABASE_AVAILABLE = False
-
-# Import mock data for templates and categories (still needed)
-from .mock_data.sample_data import (
-    CONTRACT_TEMPLATES,
-    WORK_ORDER_TYPES,
-    ISSUE_CATEGORIES,
-    PRIORITY_LEVELS,
-    WORK_ORDERS,
-    SAMPLE_ISSUES
+from supply_chain_agent.data.supply_chain_db import (
+    get_order_by_id,
+    get_order_items,
+    get_shipping_info,
+    get_customer_by_id,
+    get_product_by_id,
+    get_statistics,
+    get_sample_orders_for_testing,
+    search_orders,
+    create_work_order,
+    get_work_order,
+    list_work_orders,
+    update_work_order,
+    add_work_order_timeline_event,
+    create_issue,
+    get_issue,
+    list_issues,
+    render_fallback_template,
 )
 
-# Fallback mock data for order/logistics queries when database unavailable
-if not DATABASE_AVAILABLE:
-    from .mock_data.sample_data import ORDER_DATA, LOGISTICS_DATA
+# Import memory manager for SOP search
+try:
+    from supply_chain_agent.memory.vector_store import memory_manager
+    VECTOR_STORE_AVAILABLE = True
+except ImportError:
+    VECTOR_STORE_AVAILABLE = False
 
 
 @dataclass
@@ -85,63 +86,54 @@ class MCPServer:
             # Extract numeric ID from format like "PO-2026-001" or use directly
             try:
                 if order_id.startswith("PO-"):
-                    # Extract numeric part for database lookup
                     numeric_id = int(order_id.split("-")[-1])
                 else:
                     numeric_id = int(order_id)
             except (ValueError, IndexError):
-                numeric_id = None
+                raise ValueError(f"Invalid order ID format: {order_id}")
 
-            # Try database first if available
-            if DATABASE_AVAILABLE:
-                try:
-                    order = get_order_by_id(numeric_id) if numeric_id else None
-                    if order:
-                        # Get order items
-                        items = get_order_items(order["order_id"])
-                        # Get shipping info
-                        shipping = get_shipping_info(order["order_id"])
-
-                        # Calculate total amount
-                        total_amount = sum(item.get("sales", 0) or 0 for item in items)
-
-                        return {
-                            "order_id": f"PO-{order['order_id']}",
-                            "customer": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
-                            "customer_city": order.get("customer_city"),
-                            "customer_country": order.get("customer_country"),
-                            "status": order.get("order_status"),
-                            "delivery_status": order.get("delivery_status"),
-                            "late_delivery_risk": order.get("late_delivery_risk"),
-                            "amount": total_amount,
-                            "currency": "USD",
-                            "order_date": order.get("order_date"),
-                            "market": order.get("market"),
-                            "items": [
-                                {
-                                    "sku": f"SKU-{item.get('product_card_id')}",
-                                    "description": item.get("product_name", "Unknown"),
-                                    "quantity": item.get("order_item_quantity", 0),
-                                    "unit_price": item.get("order_item_product_price", 0),
-                                    "category": item.get("category_name")
-                                }
-                                for item in items[:5]  # Limit to 5 items
-                            ],
-                            "shipping_mode": shipping.get("shipping_mode") if shipping else None,
-                            "days_for_shipping": shipping.get("days_for_shipping_real") if shipping else None,
-                            "tracking_no": f"SF{order['order_id']:010d}" if order else None,
-                            "warehouse": order.get("order_region"),
-                            "priority": "高" if order.get("late_delivery_risk") else "常规"
-                        }
-                except Exception as e:
-                    print(f"Database query error: {e}")
-
-            # Fallback to mock data
-            if order_id in ORDER_DATA:
-                return ORDER_DATA[order_id]
-            else:
+            # Query database
+            order = get_order_by_id(numeric_id)
+            if not order:
                 self._record_failure("query_order_status")
-                raise ValueError(f"Order {order_id} not found")
+                raise ValueError(f"Order {order_id} not found in database")
+
+            # Get order items
+            items = get_order_items(order["order_id"])
+            # Get shipping info
+            shipping = get_shipping_info(order["order_id"])
+
+            # Calculate total amount
+            total_amount = sum(item.get("sales", 0) or 0 for item in items)
+
+            return {
+                "order_id": f"PO-{order['order_id']}",
+                "customer": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
+                "customer_city": order.get("customer_city"),
+                "customer_country": order.get("customer_country"),
+                "status": order.get("order_status"),
+                "delivery_status": order.get("delivery_status"),
+                "late_delivery_risk": order.get("late_delivery_risk"),
+                "amount": total_amount,
+                "currency": "USD",
+                "order_date": order.get("order_date"),
+                "market": order.get("market"),
+                "items": [
+                    {
+                        "sku": f"SKU-{item.get('product_card_id')}",
+                        "description": item.get("product_name", "Unknown"),
+                        "quantity": item.get("order_item_quantity", 0),
+                        "unit_price": item.get("order_item_product_price", 0),
+                        "category": item.get("category_name")
+                    }
+                    for item in items[:5]  # Limit to 5 items
+                ],
+                "shipping_mode": shipping.get("shipping_mode") if shipping else None,
+                "days_for_shipping": shipping.get("days_for_shipping_real") if shipping else None,
+                "tracking_no": f"SF{order['order_id']:010d}" if order else None,
+                "warehouse": order.get("order_region"),
+                "priority": "高" if order.get("late_delivery_risk") else "常规"
+            }
 
         # Get Logistics Trace Tool
         @self.mcp.tool()
@@ -160,77 +152,82 @@ class MCPServer:
             # Simulate API delay
             time.sleep(0.1)
 
-            # Try to extract order ID from tracking number format "SF{order_id}"
-            if DATABASE_AVAILABLE and tracking_no.startswith("SF"):
-                try:
-                    numeric_id = int(tracking_no[2:])
-                    order = get_order_by_id(numeric_id)
-                    shipping = get_shipping_info(numeric_id)
+            # Extract order ID from tracking number format "SF{order_id}"
+            if not tracking_no.startswith("SF"):
+                raise ValueError(f"Invalid tracking number format: {tracking_no}")
 
-                    if order and shipping:
-                        # Generate simulated logistics events based on order status
-                        delivery_status = order.get("delivery_status", "Unknown")
-                        current_location = order.get("order_city", "Unknown")
-                        destination = order.get("customer_city", "Unknown")
+            try:
+                numeric_id = int(tracking_no[2:])
+            except ValueError:
+                raise ValueError(f"Invalid tracking number: {tracking_no}")
 
-                        events = self._generate_logistics_events(
-                            delivery_status, current_location, destination, shipping
-                        )
+            order = get_order_by_id(numeric_id)
+            shipping = get_shipping_info(numeric_id)
 
-                        return {
-                            "tracking_no": tracking_no,
-                            "carrier": shipping.get("shipping_mode", "Standard"),
-                            "status": delivery_status,
-                            "current_location": current_location,
-                            "destination": destination,
-                            "sender": order.get("order_region", "Unknown"),
-                            "receiver": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
-                            "weight": round(random.uniform(1, 50), 1),
-                            "volume": f"{random.uniform(0.1, 1.0):.2f}m³",
-                            "events": events,
-                            "eta": self._calculate_eta(delivery_status),
-                            "estimated_days": shipping.get("days_for_shipment_scheduled", 3)
-                        }
-                except Exception as e:
-                    print(f"Database query error: {e}")
-
-            # Fallback to mock data
-            if tracking_no in LOGISTICS_DATA:
-                return LOGISTICS_DATA[tracking_no]
-            else:
+            if not order or not shipping:
                 self._record_failure("get_logistics_trace")
                 raise ValueError(f"Tracking number {tracking_no} not found")
 
-        # Search Contract Template Tool
+            # Generate simulated logistics events based on order status
+            delivery_status = order.get("delivery_status", "Unknown")
+            current_location = order.get("order_city", "Unknown")
+            destination = order.get("customer_city", "Unknown")
+
+            events = self._generate_logistics_events(
+                delivery_status, current_location, destination, shipping
+            )
+
+            return {
+                "tracking_no": tracking_no,
+                "carrier": shipping.get("shipping_mode", "Standard"),
+                "status": delivery_status,
+                "current_location": current_location,
+                "destination": destination,
+                "sender": order.get("order_region", "Unknown"),
+                "receiver": f"{order.get('customer_fname', '')} {order.get('customer_lname', '')}".strip(),
+                "weight": round(random.uniform(1, 50), 1),
+                "volume": f"{random.uniform(0.1, 1.0):.2f}m³",
+                "events": events,
+                "eta": self._calculate_eta(delivery_status),
+                "estimated_days": shipping.get("days_for_shipment_scheduled", 3)
+            }
+
+        # Search Contract Template Tool (now searches SOP documents)
         @self.mcp.tool()
         def search_contract_template(query: str, top_k: int = 2) -> Dict[str, Any]:
             """
-            Search for contract templates by keyword.
+            Search for SOP documents and contract-related information.
 
             Args:
                 query: Search keyword
                 top_k: Number of results to return
 
             Returns:
-                Matching contract templates with titles and content.
+                Matching SOP documents with titles and content.
             """
             self._check_health("search_contract_template")
 
             # Simulate search delay
             time.sleep(0.15)
 
-            # Simple keyword matching
-            query_lower = query.lower()
-            results = []
+            # Use vector store for semantic search
+            if VECTOR_STORE_AVAILABLE:
+                try:
+                    results = memory_manager.long_term.search_sop(query, limit=top_k)
+                    templates = [
+                        {
+                            "title": r.get("metadata", {}).get("source", "SOP Document"),
+                            "content": r.get("content", ""),
+                            "doc_type": r.get("metadata", {}).get("doc_type", "sop")
+                        }
+                        for r in results
+                    ]
+                    return {"templates": templates}
+                except Exception as e:
+                    print(f"SOP search error: {e}")
 
-            for template in CONTRACT_TEMPLATES:
-                title_lower = template["title"].lower()
-                if query_lower in title_lower:
-                    results.append(template)
-                    if len(results) >= top_k:
-                        break
-
-            return {"templates": results}
+            # If no vector store, return empty
+            return {"templates": [], "message": "SOP search not available - vector store not initialized"}
 
         # Approve Work Order Tool (requires confirmation)
         @self.mcp.tool()
@@ -250,14 +247,15 @@ class MCPServer:
             """
             self._check_health("approve_work_order")
 
-            # Check if order exists
-            if order_id not in WORK_ORDERS:
+            # Check if work order exists in database
+            work_order = get_work_order(order_id)
+            if not work_order:
                 raise ValueError(f"Work order {order_id} not found")
 
             # Return pre-filled form for confirmation
             return {
                 "order_id": order_id,
-                "work_order": WORK_ORDERS[order_id],
+                "work_order": work_order,
                 "comment": comment,
                 "approver": "Agent System",
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -272,7 +270,7 @@ class MCPServer:
 
         # Create Work Order Tool
         @self.mcp.tool()
-        def create_work_order(work_type: str, description: str, priority: str = "中",
+        def create_work_order_tool(work_type: str, description: str, priority: str = "中",
                             assigned_to: Optional[str] = None, order_id: Optional[str] = None) -> Dict[str, Any]:
             """
             Create a new work order.
@@ -293,27 +291,18 @@ class MCPServer:
             time.sleep(0.15)
 
             # Generate new work order ID
-            import random
-            new_id = f"WO-2026-{random.randint(100, 999):03d}"
+            new_id = f"WO-{datetime.now().strftime('%Y')}-{random.randint(100, 999):03d}"
 
-            # Create work order
-            work_order = {
-                "work_order_id": new_id,
-                "order_id": order_id,
-                "type": work_type,
-                "status": "待处理",
-                "created_by": "Agent System",
-                "created_date": time.strftime("%Y-%m-%d"),
-                "description": description,
-                "priority": priority,
-                "assigned_to": assigned_to,
-                "estimated_time": "待评估",
-                "required_approvals": ["部门主管"],
-                "attachments": []
-            }
-
-            # Add to WORK_ORDERS (in-memory for demo)
-            WORK_ORDERS[new_id] = work_order
+            # Create work order in database
+            work_order = create_work_order(
+                work_order_id=new_id,
+                work_type=work_type,
+                description=description,
+                priority=priority,
+                order_id=order_id,
+                assigned_to=assigned_to,
+                created_by="Agent System"
+            )
 
             return {
                 "success": True,
@@ -345,35 +334,17 @@ class MCPServer:
             time.sleep(0.2)
 
             # Generate new issue ID
-            import random
-            new_id = f"ISSUE-2026-{random.randint(100, 999):03d}"
+            new_id = f"ISSUE-{datetime.now().strftime('%Y')}-{random.randint(100, 999):03d}"
 
-            # Create issue report
-            issue_report = {
-                "issue_id": new_id,
-                "title": f"{issue_type}: {affected_order if affected_order else description[:30]}...",
-                "category": issue_type,
-                "priority": urgency,
-                "description": description,
-                "affected_order": affected_order,
-                "reported_by": reported_by or "Agent System",
-                "report_date": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "status": "待处理",
-                "assigned_to": "异常处理组",
-                "estimated_resolution": "待评估",
-                "attachments": [],
-                "updates": [
-                    {
-                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "user": "Agent System",
-                        "action": "创建问题报告",
-                        "details": f"自动创建{issue_type}问题报告"
-                    }
-                ]
-            }
-
-            # Add to SAMPLE_ISSUES (in-memory for demo)
-            SAMPLE_ISSUES[new_id] = issue_report
+            # Create issue in database
+            issue_report = create_issue(
+                issue_id=new_id,
+                issue_type=issue_type,
+                description=description,
+                urgency=urgency,
+                affected_order=affected_order,
+                reported_by=reported_by or "Agent System"
+            )
 
             return {
                 "success": True,
@@ -451,9 +422,6 @@ class MCPServer:
     def _generate_logistics_events(self, delivery_status: str, current_location: str,
                                     destination: str, shipping: Dict) -> List[Dict]:
         """Generate simulated logistics events based on delivery status."""
-        from datetime import datetime, timedelta
-        import random
-
         events = []
         base_time = datetime.now() - timedelta(days=random.randint(1, 5))
 
@@ -540,9 +508,6 @@ class MCPServer:
 
     def _calculate_eta(self, delivery_status: str) -> str:
         """Calculate estimated time of arrival based on delivery status."""
-        from datetime import datetime, timedelta
-        import random
-
         if "Late" in delivery_status:
             eta = datetime.now() + timedelta(days=random.randint(1, 3))
             return eta.strftime("%Y-%m-%d %H:%M:%S")
@@ -562,8 +527,8 @@ class MCPServer:
         print("- get_logistics_trace")
         print("- search_contract_template")
         print("- approve_work_order (requires confirmation)")
-        print("- create_work_order (新增)")
-        print("- report_issue (新增)")
+        print("- create_work_order_tool")
+        print("- report_issue")
         print("- check_tool_health")
 
         # FastMCP.run() is synchronous
@@ -578,7 +543,6 @@ def run_mcp_server(port: int = 8001):
 
 async def run_mcp_server_async(port: int = 8001):
     """Async wrapper for running MCP server in async context."""
-    import asyncio
     server = MCPServer()
     # Run in thread pool since mcp.run() is synchronous
     loop = asyncio.get_event_loop()

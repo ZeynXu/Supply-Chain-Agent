@@ -2,7 +2,6 @@
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue.svg)](https://www.python.org/)
-[![Version](https://img.shields.io/badge/Version-v1.0.0-green.svg)](./VERSION)
 [![Documentation](https://img.shields.io/badge/docs-中文文档-green.svg)](./docs/)
 [![Architecture](https://img.shields.io/badge/Architecture-Multi--Agent-blue.svg)](#)
 
@@ -49,7 +48,49 @@
 - **🎯 意图识别准确**: 规则+LLM融合识别，准确率达72%
 - **🔄 标准化流程**: 建立可复制的工单处理标准和流程
 - **🛡️ 风险可控**: 内置熔断器保护和审计机制
-- **📊 数据驱动**: 基于历史案例和知识库的智能决策
+- **📊 数据驱动**: 基于SOP知识库的智能决策
+
+## 🏗️ 项目结构
+
+```
+Supply-Chain-Agent/
+├── supply_chain_agent/           # 主模块
+│   ├── agents/                   # Agent定义
+│   │   ├── orchestrator.py       # 总控Agent
+│   │   ├── parser.py             # 解析师Agent
+│   │   ├── executor.py           # 调度员Agent
+│   │   └── auditor.py            # 审计员Agent
+│   ├── tools/                    # MCP工具实现
+│   │   ├── server.py             # MCP服务器
+│   │   └── client.py             # 工具客户端
+│   ├── graph/                    # LangGraph工作流
+│   │   ├── state.py              # 全局状态定义
+│   │   └── workflow.py           # 节点与边逻辑
+│   ├── memory/                   # 记忆系统
+│   │   ├── vector_store.py       # 向量存储管理
+│   │   ├── checkpoint.py         # 检查点管理
+│   │   └── knowledge_retriever.py# 知识检索器
+│   ├── prompts/                  # Prompt模板
+│   ├── data/                     # Python数据模块
+│   │   ├── supply_chain.db       # 业务数据库(运行时)
+│   │   ├── agent_memory.db       # 记忆数据库(运行时)
+│   │   ├── vector_store/         # 向量存储(运行时)
+│   │   ├── supply_chain_db.py    # 数据库操作
+│   │   └── data_loader.py        # 数据加载器
+│   ├── frontend/                 # React前端
+│   ├── app.py                    # FastAPI应用
+│   ├── run.py                    # 运行脚本
+│   └── config.py                 # 配置管理
+├── dataset/                      # 数据源目录
+│   ├── BusinessData/             # 业务数据(CSV)
+│   ├── SOPData/                  # SOP文档(Markdown)
+│   ├── OtherData/                # 配置文件
+│   └── README.md                 # 数据说明
+├── docs/                         # 项目文档
+│   └── PROJECT_RESEARCH_REPORT.md
+├── requirements.txt              # Python依赖
+└── README.md                     # 本文件
+```
 
 ## 🏗️ 技术架构亮点
 
@@ -75,7 +116,7 @@
 **核心设计原则**:
 - **🎯 职责分离**: 每个Agent专注单一职责，便于维护和扩展
 - **🔄 协作决策**: 模拟真实团队协作流程
-- **🛡️ 容计保障**: 执行结果必须经过审计验证
+- **🛡️ 审计保障**: 执行结果必须经过审计验证
 - **👤 Human-in-the-loop**: 关键操作支持人工确认
 
 ### 🔧 技术栈选型
@@ -108,7 +149,7 @@
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    长期记忆 (Long-term)                      │
-│  • ChromaDB: SOP手册、FAQ知识库、历史案例                    │
+│  • ChromaDB: SOP手册、FAQ知识库                              │
 │  • SQLite: 工单记录、操作日志、统计数据                      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -159,17 +200,19 @@ source env/bin/activate  # Linux/macOS
 # env\Scripts\activate  # Windows
 
 # 3. 安装后端依赖
-pip install -r supply_chain_agent/requirements.txt
+pip install -r requirements.txt
 
 # 4. 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，配置API密钥
+# 编辑 .env 文件，配置API密钥（文件已存在，直接修改即可）
 
-# 5. 启动后端服务
+# 5. 初始化数据
+python -m supply_chain_agent.data.init_data
+
+# 6. 启动后端服务
 python -m supply_chain_agent --mode web --port 8000
 
-# 6. 启动前端（另开终端）
-cd Supply-Chain-Agent/supply_chain_agent/frontend
+# 7. 启动前端（另开终端）
+cd supply_chain_agent/frontend
 npm install
 npm run dev
 ```
@@ -177,6 +220,8 @@ npm run dev
 ### 配置指南
 
 #### 必需配置
+
+编辑 `.env` 文件：
 
 ```bash
 # 智谱AI API Key (推荐)
@@ -194,7 +239,8 @@ SCA_LLM_API_KEY=your_openai_api_key
 ```bash
 # 记忆系统配置
 SCA_MEMORY_WINDOW_SIZE=20
-SCA_VECTOR_STORE_PATH=./data/vector_store
+SCA_VECTOR_STORE_PATH=./supply_chain_agent/data/vector_store
+SCA_SQLITE_DB_PATH=./supply_chain_agent/data/agent_memory.db
 
 # 熔断器配置
 SCA_CIRCUIT_BREAKER_FAILURES=3
@@ -214,15 +260,24 @@ SCA_CIRCUIT_BREAKER_RESET_TIMEOUT=300
 #### API调用
 
 ```bash
-# 查询订单物流
+# 查询订单状态（通过Agent处理）
 curl -X POST http://localhost:8000/api/process \
   -H "Content-Type: application/json" \
-  -d '{"query": "查一下PO-2026-001的货到哪了？"}'
+  -d '{"query": "查询订单77202的状态"}'
 
 # 创建工单
 curl -X POST http://localhost:8000/api/workorders \
   -H "Content-Type: application/json" \
-  -d '{"type": "quality_inspection", "type_name": "质量检验", "related_order": "PO-2026-001", "description": "到货质量抽检"}'
+  -d '{"type": "quality_inspection", "description": "订单77202到货质量抽检", "related_order": "77202"}'
+
+# 查看工单列表
+curl -X GET http://localhost:8000/api/workorders
+
+# 查看系统状态
+curl -X GET http://localhost:8000/api/status
+
+# 查看可用工具
+curl -X GET http://localhost:8000/api/tools
 ```
 
 #### Python SDK
@@ -233,20 +288,35 @@ from supply_chain_agent.agents.orchestrator import OrchestratorAgent
 
 async def main():
     agent = OrchestratorAgent()
-    result = await agent.process("查一下PO-2026-001的物流状态")
+    result = await agent.process("查询订单77202的物流状态")
     print(result["response"])
 
 asyncio.run(main())
+```
+
+#### 数据库直接查询
+
+```python
+from supply_chain_agent.data.supply_chain_db import get_order_by_id, get_customer_by_id
+
+# 查询订单
+order = get_order_by_id("77202")
+print(f"订单状态: {order['order_status']}, 配送状态: {order['delivery_status']}")
+
+# 查询客户
+customer = get_customer_by_id(20755)
+print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 ```
 
 ## 📊 支持的意图
 
 | 意图类型 | 示例输入 | 调用工具 |
 |----------|----------|----------|
-| **状态查询** | "查一下PO-2026-001的物流状态" | query_order_status, get_logistics_trace |
-| **工单创建** | "创建质量检验工单，订单PO-2026-001需要检验" | create_work_order |
-| **异常上报** | "报告物流延迟问题，订单PO-2026-002预计延迟3天" | report_issue |
-| **审批流转** | "审批工单WO-2026-001，质量合格" | approve_work_order |
+| **状态查询** | "查询订单77202的状态" | query_order_status |
+| **物流查询** | "订单77202的物流到哪了" | get_logistics_trace |
+| **工单创建** | "创建质量检验工单，订单77202需要检验" | create_work_order |
+| **异常上报** | "报告物流延迟问题，订单75939预计延迟3天" | report_issue |
+| **审批流转** | "审批工单WO-2026-XXX" | approve_work_order |
 | **合同查询** | "查找采购合同模板" | search_contract_template |
 
 ## 📈 应用效果
@@ -263,19 +333,19 @@ asyncio.run(main())
 ### 🏭 典型应用场景
 
 #### 案例一：订单状态查询
-- **用户输入**: "查一下PO-2026-001的货到哪了？"
+- **用户输入**: "查询订单77202的状态"
 - **处理流程**: 意图识别 → 实体提取 → 订单查询 → 物流追踪 → 审计验证 → 响应生成
-- **输出结果**: "订单PO-2026-001当前位于厦门中转场，预计今日18:00前派送"
+- **输出结果**: "订单77202状态为COMPLETE，配送状态为Advance shipping"
 
 #### 案例二：工单创建
-- **用户输入**: "创建质量检验工单，订单PO-2026-002需要检验"
+- **用户输入**: "创建质量检验工单，订单77202需要检验"
 - **处理流程**: 意图识别 → 槽位填充 → 工单创建 → 审计验证 → 响应生成
-- **输出结果**: "已创建质量检验工单WO-2026-003，关联订单PO-2026-002"
+- **输出结果**: "已创建质量检验工单WO-2026-XXX，关联订单77202"
 
 #### 案例三：异常上报
-- **用户输入**: "报告物流延迟问题，订单PO-2026-003预计延迟3天"
+- **用户输入**: "报告物流延迟问题，订单75939预计延迟3天"
 - **处理流程**: 意图识别 → 异常分类 → 异常上报 → 响应生成
-- **输出结果**: "已上报物流延迟异常，工单号ISS-2026-001，已通知相关责任人"
+- **输出结果**: "已上报物流延迟异常，工单号ISS-2026-XXX，已通知相关责任人"
 
 ## 🏗️ 架构设计
 
@@ -347,7 +417,7 @@ graph TD
 
 3. **🧠 三层记忆系统**
    - 短期+工作+长期记忆，支持RAG检索
-   - 历史案例增强，提升决策质量
+   - SOP知识库增强，提升决策质量
 
 4. **🛡️ 熔断器模式**
    - 工具调用熔断保护，防止故障扩散
@@ -370,6 +440,28 @@ graph TD
 4. **📊 四维评估体系**
    - 效果、效率、体验、稳定性四维评估
    - 量化指标，持续优化
+
+## 📂 数据说明
+
+### 数据源目录
+
+数据文件位于 `dataset/` 目录，详见 [dataset/README.md](./dataset/README.md)。
+
+| 目录 | 内容 | 说明 |
+|------|------|------|
+| `dataset/BusinessData/` | 业务数据CSV | 供应链订单、客户、产品、物流数据 |
+| `dataset/SOPData/` | SOP文档 | 供应链审批管理办法等Markdown文档 |
+| `dataset/OtherData/` | 配置文件 | 实体映射、降级模板、Agent配置 |
+
+### 运行时数据
+
+运行时数据存储于 `supply_chain_agent/data/` 目录：
+
+| 文件/目录 | 说明 |
+|-----------|------|
+| `supply_chain.db` | 业务数据库（客户、订单、产品等） |
+| `agent_memory.db` | 记忆数据库（工单记录、工具统计） |
+| `vector_store/` | ChromaDB向量存储（SOP文档嵌入） |
 
 ## 🤝 贡献指南
 
@@ -395,8 +487,8 @@ graph TD
 
 ## 📞 联系方式
 
-- **GitHub Issues**: [提交问题和建议](https://github.com/your-username/supply-chain-agent/issues)
-- **项目主页**: [详细介绍](https://github.com/your-username/supply-chain-agent)
+- **GitHub Issues**: [提交问题和建议](https://github.com/ZeynXu/Supply-Chain-Agent/issues)
+- **项目主页**: [详细介绍](https://github.com/ZeynXu/Supply-Chain-Agent)
 
 ## ⚠️ 免责声明
 
@@ -408,6 +500,6 @@ graph TD
 
 **🌟 如果这个项目对您有帮助，请给我们一个 Star！**
 
-[⭐ Star this repo](https://github.com/your-username/supply-chain-agent) | [🍴 Fork this repo](https://github.com/your-username/supply-chain-agent/fork) | [📖 Read the docs](./docs/)
+[⭐ Star this repo](https://github.com/ZeynXu/Supply-Chain-Agent) | [🍴 Fork this repo](https://github.com/ZeynXu/Supply-Chain-Agent/fork) | [📖 Read the docs](./docs/)
 
 </div>

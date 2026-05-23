@@ -1,0 +1,17 @@
+agent_config:
+  intent_classifier:
+    threshold: 0.75
+  execution:
+    max_retries: 3
+    tool_call_timeout: 10s
+    circuit_breaker:
+      failure_threshold: 5
+      recovery_timeout: 300s
+  clarification:
+    max_rounds: 3
+  memory:
+    short_term_max_tokens: 4096
+    summary_trigger_tokens: 3000
+  degradation:
+    static_response_enabled: true
+    cache_fallback_enabled: true

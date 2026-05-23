@@ -23,67 +23,21 @@ from supply_chain_agent.agents.report_generator import ReportGenerator
 from supply_chain_agent.agents.orchestrator import OrchestratorAgent
 from supply_chain_agent.memory.vector_store import memory_manager
 from supply_chain_agent.memory.checkpoint import checkpoint_manager
+from supply_chain_agent.data.supply_chain_db import (
+    list_work_orders,
+    get_work_order,
+    create_work_order,
+    update_work_order,
+    add_work_order_timeline_event,
+    list_issues,
+    get_issue
+)
 
 
-# 模拟工单数据存储（实际应使用数据库）
-_mock_workorders: Dict[str, Dict] = {
-    "WO-2026-001": {
-        "id": "WO-2026-001",
-        "order_no": "WO-2026-001",
-        "type": "quality_inspection",
-        "type_name": "质量检验",
-        "status": "pending",
-        "status_name": "待处理",
-        "related_order": "PO-2026-001",
-        "related_logistics": "SF123456789",
-        "description": "对到货批次进行质量抽检",
-        "created_at": "2026-04-24 10:30:00",
-        "updated_at": "2026-04-24 10:30:00",
-        "timeline": [
-            {
-                "id": "1",
-                "actor": "agent",
-                "actor_name": "Agent",
-                "action": "自动创建工单",
-                "timestamp": "2026-04-24 10:35:00"
-            }
-        ]
-    },
-    "WO-2026-002": {
-        "id": "WO-2026-002",
-        "order_no": "WO-2026-002",
-        "type": "logistics_exception",
-        "type_name": "物流异常",
-        "status": "processing",
-        "status_name": "处理中",
-        "related_order": "PO-2026-002",
-        "related_logistics": "SF987654321",
-        "description": "物流延误，预计延迟3天",
-        "created_at": "2026-04-23 15:20:00",
-        "updated_at": "2026-04-24 09:00:00",
-        "timeline": [
-            {
-                "id": "1",
-                "actor": "agent",
-                "actor_name": "Agent",
-                "action": "自动创建工单",
-                "timestamp": "2026-04-23 15:25:00"
-            },
-            {
-                "id": "2",
-                "actor": "user",
-                "actor_name": "运营专员",
-                "action": "开始处理",
-                "timestamp": "2026-04-24 09:00:00"
-            }
-        ]
-    }
-}
-
-# 模拟会话存储
+# 会话存储
 _sessions: Dict[str, Dict] = {}
 
-# 模拟日志存储
+# 日志存储
 _logs: List[Dict] = []
 
 # 性能指标追踪
@@ -810,8 +764,8 @@ def create_app() -> FastAPI:
                     "compression_threshold": 0.8
                 },
                 "long_term": {
-                    "vector_store_path": "./data/chroma",
-                    "sqlite_path": "./data/agent.db"
+                    "vector_store_path": "./supply_chain_agent/data/vector_store",
+                    "sqlite_path": "./supply_chain_agent/data/agent_memory.db"
                 }
             }
         }
@@ -872,15 +826,15 @@ def create_app() -> FastAPI:
         size: int = Query(default=10, ge=1, le=100)
     ):
         """获取工单列表"""
-        items = list(_mock_workorders.values())
+        # 从数据库获取工单
+        items = list_work_orders(status=status, limit=100)
 
         # 筛选
-        if status:
-            items = [i for i in items if i["status"] == status]
         if type:
-            items = [i for i in items if i["type"] == type]
+            items = [i for i in items if i.get("work_type") == type]
         if keyword:
-            items = [i for i in items if keyword in i["order_no"] or (i.get("related_order") and keyword in i["related_order"])]
+            items = [i for i in items if keyword in i.get("work_order_id", "") or
+                     (i.get("order_id") and keyword in i.get("order_id", ""))]
 
         # 分页
         total = len(items)
@@ -898,87 +852,78 @@ def create_app() -> FastAPI:
     @app.get("/api/workorders/{order_id}")
     async def get_workorder(order_id: str):
         """获取工单详情"""
-        if order_id in _mock_workorders:
-            return _mock_workorders[order_id]
+        workorder = get_work_order(order_id)
+        if workorder:
+            return workorder
         raise HTTPException(status_code=404, detail=f"工单 {order_id} 不存在")
 
     @app.post("/api/workorders")
     async def create_workorder(data: dict):
         """创建工单"""
-        order_id = f"WO-{uuid.uuid4().hex[:8].upper()}"
-        workorder = {
-            "id": order_id,
-            "order_no": order_id,
-            "type": data.get("type", "quality_inspection"),
-            "type_name": data.get("type_name", "质量检验"),
-            "status": "pending",
-            "status_name": "待处理",
-            "related_order": data.get("related_order"),
-            "related_logistics": data.get("related_logistics"),
-            "description": data.get("description", ""),
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "timeline": []
-        }
-        _mock_workorders[order_id] = workorder
+        order_id = f"WO-{datetime.now().strftime('%Y')}-{uuid.uuid4().hex[:3].upper()}"
+        workorder = create_work_order(
+            work_order_id=order_id,
+            work_type=data.get("type", "quality_inspection"),
+            description=data.get("description", ""),
+            priority=data.get("priority", "中"),
+            order_id=data.get("related_order"),
+            assigned_to=data.get("assigned_to")
+        )
         return workorder
 
     @app.put("/api/workorders/{order_id}")
-    async def update_workorder(order_id: str, data: dict):
+    async def update_workorder_api(order_id: str, data: dict):
         """更新工单"""
-        if order_id not in _mock_workorders:
+        existing = get_work_order(order_id)
+        if not existing:
             raise HTTPException(status_code=404, detail=f"工单 {order_id} 不存在")
 
-        workorder = _mock_workorders[order_id]
-        for key, value in data.items():
-            if key in workorder and key not in ["id", "order_no"]:
-                workorder[key] = value
-        workorder["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        return workorder
+        updated = update_work_order(
+            work_order_id=order_id,
+            status=data.get("status"),
+            priority=data.get("priority"),
+            description=data.get("description"),
+            assigned_to=data.get("assigned_to")
+        )
+        return updated
 
     @app.post("/api/workorders/{order_id}/approve")
     async def approve_workorder(order_id: str, data: dict):
         """审批通过工单"""
-        if order_id not in _mock_workorders:
+        existing = get_work_order(order_id)
+        if not existing:
             raise HTTPException(status_code=404, detail=f"工单 {order_id} 不存在")
 
-        workorder = _mock_workorders[order_id]
-        workorder["status"] = "completed"
-        workorder["status_name"] = "已完成"
-        workorder["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 更新状态
+        updated = update_work_order(work_order_id=order_id, status="已完成")
 
         # 添加时间线记录
-        workorder["timeline"].append({
-            "id": str(len(workorder["timeline"]) + 1),
-            "actor": "user",
-            "actor_name": "当前用户",
-            "action": f"审批通过: {data.get('comment', '')}",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+        add_work_order_timeline_event(
+            work_order_id=order_id,
+            actor="当前用户",
+            action=f"审批通过: {data.get('comment', '')}"
+        )
 
-        return workorder
+        return get_work_order(order_id)
 
     @app.post("/api/workorders/{order_id}/reject")
     async def reject_workorder(order_id: str, data: dict):
         """拒绝工单"""
-        if order_id not in _mock_workorders:
+        existing = get_work_order(order_id)
+        if not existing:
             raise HTTPException(status_code=404, detail=f"工单 {order_id} 不存在")
 
-        workorder = _mock_workorders[order_id]
-        workorder["status"] = "closed"
-        workorder["status_name"] = "已关闭"
-        workorder["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # 更新状态
+        updated = update_work_order(work_order_id=order_id, status="已关闭")
 
         # 添加时间线记录
-        workorder["timeline"].append({
-            "id": str(len(workorder["timeline"]) + 1),
-            "actor": "user",
-            "actor_name": "当前用户",
-            "action": f"拒绝: {data.get('comment', '')}",
-            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        })
+        add_work_order_timeline_event(
+            work_order_id=order_id,
+            actor="当前用户",
+            action=f"拒绝: {data.get('comment', '')}"
+        )
 
-        return workorder
+        return get_work_order(order_id)
 
     # ==================== WebSocket接口 ====================
 

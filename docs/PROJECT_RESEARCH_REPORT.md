@@ -1,8 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V1.0  
-**生成日期**: 2026年5月8日  
+**文档版本**: V2.0  
+**生成日期**: 2026年5月23日  
 **研究范围**: 完整项目代码与文档分析  
+**数据架构**: 已重构为使用真实数据源，遵循 DATA_ARCHITECTURE.md  
 
 ---
 
@@ -61,9 +62,7 @@ Supply_Chain_Agent/
 │   │   └── llm_client.py         # LLM客户端 - 统一LLM接口
 │   ├── tools/                    # MCP工具实现
 │   │   ├── server.py             # MCP服务器 - 工具服务端
-│   │   ├── client.py             # 工具客户端 - 带熔断保护
-│   │   └── mock_data/            # 模拟数据源
-│   │       └── sample_data.py    # 示例数据定义
+│   │   └── client.py             # 工具客户端 - 带熔断保护
 │   ├── graph/                    # LangGraph工作流
 │   │   ├── state.py              # 全局状态定义
 │   │   ├── workflow.py           # 节点与边逻辑
@@ -71,7 +70,6 @@ Supply_Chain_Agent/
 │   ├── memory/                   # 记忆系统
 │   │   ├── vector_store.py       # 向量存储管理
 │   │   ├── checkpoint.py         # 检查点管理
-│   │   ├── case_enhancer.py      # 案例增强器
 │   │   └── knowledge_retriever.py# 知识检索器
 │   ├── prompts/                  # Prompt模板
 │   │   ├── intent.py             # 意图识别Prompt
@@ -83,10 +81,25 @@ Supply_Chain_Agent/
 │   ├── app.py                    # FastAPI应用
 │   ├── run.py                    # 运行脚本
 │   └── config.py                 # 配置管理
-├── data/                         # 数据目录
-│   ├── vector_store/             # ChromaDB向量存储
-│   ├── checkpoints/              # 状态检查点
-│   └── agent_memory.db           # SQLite数据库
+├── supply_chain_agent/data/      # Python数据模块
+│   ├── supply_chain.db           # SQLite 业务数据库 (运行时)
+│   ├── vector_store/             # ChromaDB 向量存储 (SOP 文档)
+│   ├── agent_memory.db           # SQLite 记忆数据库
+│   ├── data_loader.py            # 数据加载器
+│   ├── init_data.py              # 数据初始化脚本
+│   └── supply_chain_db.py        # 数据库操作模块
+├── dataset/                      # 数据源目录
+│   ├── BusinessData/             # 业务数据源
+│   │   └── DataCoSupplyChainDataset.csv
+│   ├── SOPData/                  # SOP 文档源
+│   │   ├── Supply Chain Business Approval Management Measures.md
+│   │   └── Customer Classification and Performance Quota Management Measures.md
+│   ├── OtherData/                # 其他数据源
+│   │   ├── EntityMapping.csv     # 实体同义词映射
+│   │   ├── FallbackResponseTemplate.csv  # 降级响应模板
+│   │   └── config.yaml           # Agent 配置
+│   ├── DATA_ARCHITECTURE.md      # 数据架构规范
+│   └── README.md                 # 数据描述
 ├── docs/                         # 文档目录
 └── .claude/                      # Claude Code配置
 ```
@@ -502,9 +515,16 @@ llm_max_tokens: int = 65536
 
 | 存储 | 用途 | 数据类型 |
 |------|------|----------|
-| **ChromaDB** | 向量存储 | SOP、FAQ、历史案例 |
-| **SQLite** | 关系存储 | 工单记录、操作日志、统计数据 |
+| **SQLite** | 关系存储 | 业务数据、工单记录、实体映射、降级模板、配置 |
+| **ChromaDB** | 向量存储 | SOP 文档 (从 dataset/SOPData/ 加载) |
 | **JSON文件** | 检查点存储 | LangGraph状态持久化 |
+
+**数据源**: `/root/Supply-Chain-Agent/dataset/`
+- 业务数据: `BusinessData/DataCoSupplyChainDataset.csv`
+- SOP 文档: `SOPData/*.md`
+- 实体映射: `OtherData/EntityMapping.csv`
+- 降级模板: `OtherData/FallbackResponseTemplate.csv`
+- 配置文件: `OtherData/config.yaml`
 
 ---
 
@@ -608,31 +628,28 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
 
 ### 5.4 完整处理流程示例
 
-**用户输入**: "查一下PO-2026-001的货到哪了？"
+**用户输入**: "查询订单77202的状态"
 
 ```
 1. [parse_input] 
-   → 意图识别: 状态查询/物流查询
-   → 实体提取: {order_id: "PO-2026-001"}
+   → 意图识别: 状态查询/订单查询
+   → 实体提取: {order_id: "77202"}
    → 缺失槽位: []
 
 2. [plan_task]
-   → 执行计划: ["query_order_status", "get_logistics_trace"]
+   → 执行计划: ["query_order_status"]
 
 3. [execute_task] - query_order_status
-   → 结果: {order_id: "PO-2026-001", status: "已发货", tracking_no: "SF1234567890"}
+   → 结果: {order_id: "77202", status: "COMPLETE", delivery_status: "Advance shipping"}
 
-4. [execute_task] - get_logistics_trace
-   → 结果: {tracking_no: "SF1234567890", status: "运输中", current_location: "厦门中转场"}
-
-5. [audit]
+4. [audit]
    → 审计通过: True
    → 问题: []
    → 警告: []
 
-6. [generate_report]
-   → 响应: "订单PO-2026-001当前位于厦门中转场，预计今日18:00前派送"
-   → 工具使用: ["query_order_status", "get_logistics_trace"]
+5. [generate_report]
+   → 响应: "订单77202状态为COMPLETE，配送状态为Advance shipping"
+   → 工具使用: ["query_order_status"]
 ```
 
 ---
@@ -662,12 +679,17 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
 │                    长期记忆 (Long-term)                      │
 │  ┌─────────────────────┐  ┌─────────────────────┐          │
 │  │      ChromaDB       │  │       SQLite        │          │
-│  │ • SOP手册           │  │ • 工单处理记录      │          │
-│  │ • FAQ知识库         │  │ • 操作日志          │          │
-│  │ • 历史案例          │  │ • 工具使用统计      │          │
+│  │ • SOP手册 (7条)     │  │ • 工单处理记录      │          │
+│  │ • FAQ知识库 (3条)   │  │ • 工具使用统计      │          │
+│  │ • 知识库 (备用)     │  │ • 记忆项存储        │          │
 │  └─────────────────────┘  └─────────────────────┘          │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**数据存储位置**:
+- 向量存储: `supply_chain_agent/data/vector_store/`
+- 记忆数据库: `supply_chain_agent/data/agent_memory.db`
+- 检查点目录: `supply_chain_agent/data/checkpoints/`
 
 ### 6.2 ShortTermMemory实现
 
@@ -690,27 +712,49 @@ class ShortTermMemory:
         """获取最近的记忆项"""
 ```
 
+**特点**:
+- 纯内存存储，不持久化
+- 窗口大小默认20条
+- 支持按Agent/Action分组摘要
+
 ### 6.3 LongTermMemory实现
 
-**ChromaDB集合**：
-- `sop_manual`: 标准操作流程
-- `faq`: 常见问题解答
-- `historical_cases`: 历史案例记录
+**文件位置**: `supply_chain_agent/memory/vector_store.py`
 
-**SQLite表结构**：
+#### ChromaDB向量存储
+
+| 集合名称 | 用途 | 数据来源 | 当前记录数 |
+|----------|------|----------|------------|
+| `sop_manual` | 标准操作流程 | `dataset/SOPData/*.md` | 7条 |
+| `faq` | 常见问题解答 | 内置 | 3条 |
+| `knowledge_base` | 知识库(备用) | 运行时添加 | 0条 |
+
+#### SQLite记忆数据库
+
+**数据库文件**: `supply_chain_agent/data/agent_memory.db`
+
+| 表名 | 用途 | 说明 |
+|------|------|------|
+| `memory_items` | 记忆项存储 | 对话/操作记忆 |
+| `tool_usage_stats` | 工具使用统计 | 成功/失败次数、耗时 |
+| `work_order_records` | 工单处理记录 | 完整处理流程记录 |
+
+**表结构详情**:
+
 ```sql
--- 工单处理记录
-CREATE TABLE work_order_records (
-    id INTEGER PRIMARY KEY,
-    order_id TEXT NOT NULL,
-    intent_type TEXT NOT NULL,
-    entities TEXT,
-    tool_results TEXT,
-    success BOOLEAN,
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+-- 记忆项表
+CREATE TABLE memory_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    memory_type TEXT NOT NULL,      -- short_term/working/long_term
+    content TEXT NOT NULL,          -- 记忆内容 (JSON)
+    embedding_id TEXT,              -- 向量存储关联ID
+    tags TEXT,                      -- 标签 (JSON数组)
+    importance REAL,                -- 重要度 (0.0-1.0)
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 工具使用统计
+-- 工具使用统计表
 CREATE TABLE tool_usage_stats (
     tool_name TEXT PRIMARY KEY,
     success_count INTEGER DEFAULT 0,
@@ -719,57 +763,121 @@ CREATE TABLE tool_usage_stats (
     last_used DATETIME
 );
 
--- 增强案例表
-CREATE TABLE enhanced_cases (
-    case_id TEXT PRIMARY KEY,
+-- 工单处理记录表
+CREATE TABLE work_order_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id TEXT NOT NULL,
     intent_type TEXT NOT NULL,
-    quality_score REAL,
-    quality_level TEXT,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    intent_subtype TEXT,
+    entities TEXT,                  -- 提取的实体 (JSON)
+    tool_results TEXT,              -- 工具调用结果 (JSON)
+    audit_results TEXT,             -- 审计结果 (JSON)
+    final_report TEXT,              -- 最终报告 (JSON)
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    success BOOLEAN,
+    error_message TEXT
 );
 ```
 
-### 6.4 案例增强器
+#### 主要方法
 
-**文件位置**: `supply_chain_agent/memory/case_enhancer.py`
-
-**功能**：
-- 历史案例数据丰富化
-- 案例质量评估
-- 多策略检索
-
-**检索策略**：
 ```python
-class RetrievalStrategy(Enum):
-    SEMANTIC = "semantic"   # 语义检索
-    KEYWORD = "keyword"     # 关键词检索
-    HYBRID = "hybrid"       # 混合检索
-    METADATA = "metadata"   # 元数据过滤
+class LongTermMemory:
+    def search_sop(self, query: str, limit: int = 2) -> List[Dict]:
+        """搜索SOP手册"""
+        
+    def search_faq(self, query: str, limit: int = 3) -> List[Dict]:
+        """搜索FAQ"""
+        
+    def record_work_order(self, order_id, intent_type, entities, 
+                         tool_results, audit_results, final_report, success):
+        """记录工单处理过程"""
+        
+    def load_sop_documents(self, sop_dir: str) -> int:
+        """从目录加载SOP文档到向量存储"""
 ```
 
-**案例质量等级**：
-- EXCELLENT: 完整流程+成功结果
-- GOOD: 关键步骤+结果
-- FAIR: 基本可用
-- POOR: 信息不全
-
-### 6.5 检查点管理
+### 6.4 检查点管理
 
 **文件位置**: `supply_chain_agent/memory/checkpoint.py`
 
 ```python
 class CheckpointManager:
-    def save_checkpoint(self, state: Dict, checkpoint_id: str):
-        """保存状态检查点"""
+    def __init__(self, checkpoint_dir: str = "./supply_chain_agent/data/checkpoints"):
+        self.checkpoint_dir = checkpoint_dir
+    
+    def save_checkpoint(self, state: Dict, checkpoint_id: str, metadata: Dict = None):
+        """保存状态检查点到JSON文件"""
         
     def load_checkpoint(self, checkpoint_id: str) -> Optional[Dict]:
         """加载检查点"""
         
-    def list_checkpoints(self, limit: int) -> List[Dict]:
-        """列出检查点"""
+    def list_checkpoints(self, limit: int = 10) -> List[Dict]:
+        """列出最近的检查点"""
         
-    def cleanup_old_checkpoints(self, max_age_hours: int):
+    def cleanup_old_checkpoints(self, max_age_hours: int = 24):
         """清理过期检查点"""
+        
+    def get_stats(self) -> Dict[str, Any]:
+        """获取检查点统计信息"""
+```
+
+**检查点文件格式**:
+```json
+{
+    "state": { ... },
+    "metadata": { ... },
+    "timestamp": 1716451200.0,
+    "timestamp_iso": "2024-05-23T10:00:00",
+    "checkpoint_id": "abc123"
+}
+```
+
+### 6.5 MemoryManager统一接口
+
+**文件位置**: `supply_chain_agent/memory/vector_store.py`
+
+```python
+class MemoryManager:
+    """管理三层记忆的统一接口"""
+    
+    def __init__(self, load_sop_on_init: bool = True):
+        self.short_term = ShortTermMemory(window_size=20)
+        self.long_term = LongTermMemory(...)
+    
+    def retrieve_relevant_knowledge(self, query: str, intent_type: str) -> Dict:
+        """检索相关知识 (SOP + FAQ)"""
+        return {
+            "sops": self.long_term.search_sop(query, limit=2),
+            "faqs": self.long_term.search_faq(query, limit=3)
+        }
+    
+    def format_knowledge_for_prompt(self, knowledge: Dict) -> str:
+        """格式化知识供LLM使用"""
+    
+    def record_agent_action(self, agent: str, action: str, details: Dict):
+        """记录Agent操作到短期记忆"""
+
+# 全局单例
+memory_manager = MemoryManager()
+```
+
+### 6.6 知识检索器
+
+**文件位置**: `supply_chain_agent/memory/knowledge_retriever.py`
+
+用于降级响应时的知识检索：
+
+```python
+class KnowledgeRetriever:
+    async def search(self, query: str, top_k: int = 3) -> List[Dict]:
+        """搜索知识库"""
+    
+    async def search_sop(self, query: str, top_k: int = 2) -> List[Dict]:
+        """搜索SOP"""
+    
+    async def search_faq(self, query: str, top_k: int = 2) -> List[Dict]:
+        """搜索FAQ"""
 ```
 
 ---
@@ -866,20 +974,62 @@ async def _fallback_response(self, user_input: str, intent_info: Dict, error: st
     }
 ```
 
-### 7.6 模拟数据
+### 7.6 数据架构
 
-**文件位置**: `supply_chain_agent/tools/mock_data/sample_data.py`
+**数据来源**: `/root/Supply-Chain-Agent/dataset/` 目录
 
-**订单数据**：
-- PO-2026-001: 已发货，顺丰快递
-- PO-2026-002: 生产中，加急
-- PO-2026-003: 待收货，圆通速递
-- PO-2026-004: 已取消
+**数据架构遵循**: `dataset/DATA_ARCHITECTURE.md`
 
-**物流数据**：
-- SF1234567890: 运输中，厦门中转场
-- YT9876543210: 派送中，北京朝阳区
-- JD555666777: 已签收，上海浦东
+#### 核心数据层
+
+| 数据类型 | 存储位置 | 来源文件 |
+|----------|----------|----------|
+| **业务数据** | SQLite 数据库 | `dataset/BusinessData/DataCoSupplyChainDataset.csv` |
+| **SOP 文档** | ChromaDB 向量存储 | `dataset/SOPData/*.md` |
+| **实体映射** | SQLite 数据库 | `dataset/OtherData/EntityMapping.csv` |
+| **降级模板** | SQLite 数据库 | `dataset/OtherData/FallbackResponseTemplate.csv` |
+| **Agent 配置** | SQLite 数据库 | `dataset/OtherData/config.yaml` |
+
+#### 数据库表结构
+
+**核心业务表**:
+- `customers`: 客户信息 (3,486 条记录)
+- `orders`: 订单信息 (3,861 条记录)
+- `order_items`: 订单明细 (5,000 条记录)
+- `products`: 产品信息 (94 条记录)
+- `shipping`: 物流信息 (5,000 条记录)
+- `categories`: 产品分类 (42 条记录)
+- `departments`: 部门信息 (11 条记录)
+
+**新增业务表**:
+- `work_orders`: 工单管理
+- `issues`: 问题报告
+- `entity_mappings`: 实体同义词映射 (50 条记录)
+- `fallback_templates`: 降级响应模板 (23 条记录)
+- `agent_config`: Agent 配置参数 (10 条配置项)
+
+#### 向量存储内容
+
+**SOP 文档** (7 个文档块):
+- `Supply Chain Business Approval Management Measures.md`: 供应链业务审批管理办法
+- `Customer Classification and Performance Quota Management Measures.md`: 客商分级与履约额度管理办法
+
+位于 `dataset/SOPData/` 目录。
+
+#### 数据初始化
+
+```bash
+# 初始化所有数据
+python -m supply_chain_agent.data.init_data
+
+# 仅验证数据
+python -m supply_chain_agent.data.init_data --verify
+
+# 仅加载 SOP 文档
+python -m supply_chain_agent.data.init_data --sop-only
+```
+
+**注意**: 后端不使用任何模拟数据，所有数据来源于数据库。前端 mock 模式数据保留在 `frontend/src/api/mock/chatMock.ts`。
 
 ---
 
@@ -1038,15 +1188,15 @@ class Settings(BaseSettings):
     # Agent配置
     max_retries: int = 3
     clarification_max_attempts: int = 3
-    
+
     # 记忆配置
     memory_window_size: int = 20
-    vector_store_path: str = "./data/vector_store"
-    
+    vector_store_path: str = "./supply_chain_agent/data/vector_store"
+
     # 熔断器配置
     circuit_breaker_failures: int = 3
     circuit_breaker_reset_timeout: int = 300
-    
+
     # Web配置
     web_port: int = 8000
     debug_mode: bool = True
@@ -1192,8 +1342,8 @@ services:
 
 ### 14.3 企业集成
 
-1. **真实ERP集成**: 替换Mock数据，集成真实ERP系统
-2. **真实TMS集成**: 集成真实物流管理系统
+1. **扩展业务数据**: 在 `dataset/BusinessData/` 添加更多业务数据文件
+2. **扩展 SOP 文档**: 在 `dataset/SOPData/` 添加更多 SOP 文档
 3. **OA系统集成**: 集成企业OA审批流程
 4. **认证授权**: 增加企业级认证授权
 
@@ -1249,8 +1399,12 @@ SCA_MAX_RETRIES=3
 SCA_CLARIFICATION_MAX_ATTEMPTS=3
 
 # 存储配置
-SCA_VECTOR_STORE_PATH=./data/vector_store
-SCA_SQLITE_DB_PATH=./data/agent_memory.db
+SCA_VECTOR_STORE_PATH=./supply_chain_agent/data/vector_store
+SCA_SQLITE_DB_PATH=./supply_chain_agent/data/agent_memory.db
+
+# 数据初始化
+# 首次运行需要初始化数据:
+# python -m supply_chain_agent.data.init_data
 ```
 
 ---

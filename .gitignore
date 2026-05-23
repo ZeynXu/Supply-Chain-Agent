@@ -41,11 +41,6 @@ env/
 .claude/
 .devpace/
 
-# Data files
-data/
-*.db
-*.sqlite
-
 # Logs
 *.log
 logs/
