@@ -678,7 +678,7 @@ class MCPServer:
     def run_server(self, port: int = 8001):
         """Run the MCP server (synchronous)."""
         print(f"Starting MCP server on port {port}...")
-        print("Available tools (following MCP Server Design.md):")
+        print("Available tools:")
         print("--- Read-Only Query Tools ---")
         print("- query_customer: 根据客户ID查询客户基本信息")
         print("- query_customer_orders: 查询某客户的订单列表（分页）")

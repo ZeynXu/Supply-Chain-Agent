@@ -632,8 +632,8 @@ class OrchestratorAgent:
                             results[task] = {"error": str(e)}
 
                     # Generate simple response
-                    if "query_order_status" in results:
-                        order_data = results["query_order_status"]
+                    if "query_order" in results:
+                        order_data = results["query_order"]
                         if "error" not in order_data:
                             return (
                                 f"✅ 简易查询完成\n\n"

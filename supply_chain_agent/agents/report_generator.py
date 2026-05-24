@@ -51,7 +51,7 @@ class ReportGenerator:
         # Add detailed results
         if intent_subtype == "物流查询":
             report["details"] = self._extract_logistics_details(tool_results)
-        elif intent_subtype == "订单状态查询":
+        elif intent_subtype == "订单查询":
             report["details"] = self._extract_order_details(tool_results)
 
         return report
@@ -79,9 +79,9 @@ class ReportGenerator:
         }
 
         # Add sections based on intent
-        if intent_type == "状态查询":
+        if intent_type == "信息查询":
             card["sections"].extend(self._create_query_sections(report))
-        elif intent_type == "审批流转":
+        elif intent_type == "工单管理":
             card["sections"].extend(self._create_approval_sections(report))
 
         # Add actions if applicable
@@ -155,25 +155,24 @@ class ReportGenerator:
         intent_subtype = intent.get("intent_level_2", "")
 
         if intent_subtype == "物流查询":
-            if "get_logistics_trace" in tool_results:
-                logistics_data = tool_results["get_logistics_trace"]
-                tracking_no = logistics_data.get("tracking_no", "")
-                status = logistics_data.get("status", "")
-                current_location = logistics_data.get("current_location", "")
-                eta = logistics_data.get("eta", "")
-                return f"运单 {tracking_no} 状态: {status}，当前位置: {current_location}，预计到达: {eta}"
-            elif "query_order_status" in tool_results:
-                order_data = tool_results["query_order_status"]
+            if "query_shipment" in tool_results:
+                shipment_data = tool_results["query_shipment"]
+                order_id = shipment_data.get("order_id", "")
+                status_desc = shipment_data.get("status_description", "")
+                shipping_mode = shipment_data.get("shipping_mode", "")
+                return f"订单 {order_id} 物流状态: {status_desc}，运输方式: {shipping_mode}"
+            elif "query_order" in tool_results:
+                order_data = tool_results["query_order"]
                 order_id = order_data.get("order_id", "")
-                status = order_data.get("status", "")
-                tracking_no = order_data.get("tracking_no", "")
-                return f"订单 {order_id} 状态: {status}，运单号: {tracking_no}"
+                status = order_data.get("order_status", "")
+                delivery_status = order_data.get("delivery_status", "")
+                return f"订单 {order_id} 状态: {status}，配送状态: {delivery_status}"
 
-        elif intent_subtype == "订单状态查询":
-            if "query_order_status" in tool_results:
-                order_data = tool_results["query_order_status"]
+        elif intent_subtype == "订单查询":
+            if "query_order" in tool_results:
+                order_data = tool_results["query_order"]
                 order_id = order_data.get("order_id", "")
-                status = order_data.get("status", "")
+                status = order_data.get("order_status", "")
                 return f"订单 {order_id} 当前状态: {status}"
 
         return f"{intent_type}处理完成"
@@ -182,41 +181,42 @@ class ReportGenerator:
         """Extract logistics details from tool results."""
         details = {}
 
-        if "query_order_status" in tool_results:
-            order_data = tool_results["query_order_status"]
+        if "query_order" in tool_results:
+            order_data = tool_results["query_order"]
             details["order"] = {
                 "id": order_data.get("order_id"),
-                "status": order_data.get("status"),
-                "amount": order_data.get("amount"),
-                "supplier": order_data.get("supplier"),
-                "tracking_no": order_data.get("tracking_no")
+                "status": order_data.get("order_status"),
+                "delivery_status": order_data.get("delivery_status"),
+                "market": order_data.get("market"),
+                "benefit": order_data.get("benefit_per_order")
             }
 
-        if "get_logistics_trace" in tool_results:
-            logistics_data = tool_results["get_logistics_trace"]
-            details["logistics"] = {
-                "tracking_no": logistics_data.get("tracking_no"),
-                "status": logistics_data.get("status"),
-                "current_location": logistics_data.get("current_location"),
-                "eta": logistics_data.get("eta"),
-                "carrier": logistics_data.get("carrier", "")
+        if "query_shipment" in tool_results:
+            shipment_data = tool_results["query_shipment"]
+            details["shipment"] = {
+                "order_id": shipment_data.get("order_id"),
+                "shipping_mode": shipment_data.get("shipping_mode"),
+                "shipping_date": shipment_data.get("shipping_date"),
+                "days_real": shipment_data.get("days_for_shipping_real"),
+                "days_scheduled": shipment_data.get("days_for_shipment_scheduled"),
+                "status_description": shipment_data.get("status_description")
             }
 
         return details
 
     def _extract_order_details(self, tool_results: Dict[str, Any]) -> Dict[str, Any]:
         """Extract order details from tool results."""
-        if "query_order_status" in tool_results:
-            order_data = tool_results["query_order_status"]
+        if "query_order" in tool_results:
+            order_data = tool_results["query_order"]
             return {
                 "order": {
                     "id": order_data.get("order_id"),
-                    "customer": order_data.get("customer"),
-                    "supplier": order_data.get("supplier"),
-                    "status": order_data.get("status"),
-                    "amount": order_data.get("amount"),
+                    "customer_id": order_data.get("customer_id"),
+                    "status": order_data.get("order_status"),
+                    "delivery_status": order_data.get("delivery_status"),
                     "order_date": order_data.get("order_date"),
-                    "expected_delivery": order_data.get("expected_delivery")
+                    "market": order_data.get("market"),
+                    "benefit": order_data.get("benefit_per_order")
                 }
             }
         return {}
@@ -233,20 +233,20 @@ class ReportGenerator:
                 "content": f"""
                     - **订单号**: {order.get('id', 'N/A')}
                     - **状态**: {order.get('status', 'N/A')}
-                    - **供应商**: {order.get('supplier', 'N/A')}
-                    - **金额**: ¥{order.get('amount', 0):,.2f}
+                    - **配送状态**: {order.get('delivery_status', 'N/A')}
+                    - **市场**: {order.get('market', 'N/A')}
                 """
             })
 
-        if "logistics" in details:
-            logistics = details["logistics"]
+        if "shipment" in details:
+            shipment = details["shipment"]
             sections.append({
                 "title": "物流信息",
                 "content": f"""
-                    - **运单号**: {logistics.get('tracking_no', 'N/A')}
-                    - **状态**: {logistics.get('status', 'N/A')}
-                    - **当前位置**: {logistics.get('current_location', 'N/A')}
-                    - **预计到达**: {logistics.get('eta', 'N/A')}
+                    - **运输方式**: {shipment.get('shipping_mode', 'N/A')}
+                    - **发货日期**: {shipment.get('shipping_date', 'N/A')}
+                    - **实际运输天数**: {shipment.get('days_real', 'N/A')}
+                    - **状态描述**: {shipment.get('status_description', 'N/A')}
                 """
             })
 
@@ -264,7 +264,7 @@ class ReportGenerator:
         """Create action buttons for response card."""
         intent_type = report["intent"]["type"]
 
-        if intent_type == "审批流转":
+        if intent_type == "工单管理":
             return [{
                 "label": "确认提交审批",
                 "description": "提交工单审批申请",
@@ -275,7 +275,7 @@ class ReportGenerator:
                 "action": "edit_comment"
             }]
 
-        elif intent_type == "状态查询":
+        elif intent_type == "信息查询":
             return [{
                 "label": "刷新状态",
                 "description": "重新查询最新状态",

@@ -1,7 +1,7 @@
 标准实体名,别名（口语化表达）,说明
 order_id,订单号、订单编号、单号、ID、ORDER ID、OrderId、合同号、交易编号、流水号、订单ID,订单唯一标识符
 order_date,下单日期、下单时间、订单日期、购买日期、什么时候买的、哪天下的单、购买时间,订单创建日期
-order_status,订单状态、处理状态、进度、走到哪了、怎么样了、现在什么状态、完成没、待付款还是已发货,订单当前状态（COMPLETE/PENDING等）
+order_status,订单状态、处理状态、进度、到哪了、怎么样了、现在什么状态、完成没、待付款还是已发货,订单当前状态（COMPLETE/PENDING等）
 delivery_status,发货状态、配送状态、物流状态、送货情况、是否已发货、签收状态,发货结果（Advance shipping等）
 customer_id,客户编号、客户ID、用户ID、会员号、客户代码、账号、客户编码,客户唯一标识
 customer_name,客户名称、姓名、用户名、客户名、下单人、购买人、联系人、收货人,客户姓名（通常为first_name+last_name）

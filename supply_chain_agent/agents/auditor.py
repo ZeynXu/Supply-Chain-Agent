@@ -126,14 +126,14 @@ class AuditorAgent:
             return {"issues": issues, "warnings": warnings, "notifications": notifications}
 
         # Tool-specific audits
-        if tool_name == "query_order_status":
+        if tool_name == "query_order":
             audit_result = await self._audit_order_status(result)
             issues.extend(audit_result.get("issues", []))
             warnings.extend(audit_result.get("warnings", []))
             notifications.extend(audit_result.get("notifications", []))
 
-        elif tool_name == "get_logistics_trace":
-            audit_result = await self._audit_logistics_trace(result)
+        elif tool_name == "query_shipment":
+            audit_result = await self._audit_shipment(result)
             issues.extend(audit_result.get("issues", []))
             warnings.extend(audit_result.get("warnings", []))
             notifications.extend(audit_result.get("notifications", []))
@@ -152,76 +152,50 @@ class AuditorAgent:
         warnings = []
         notifications = []
 
-        # Check required fields
-        required_fields = ["order_id", "status", "amount"]
+        # Check required fields based on MCP query_order output
+        required_fields = ["order_id", "order_status"]
         for field in required_fields:
             if field not in result:
                 issues.append(f"订单查询结果缺少必要字段: {field}")
 
         # Check status validity
-        valid_statuses = ["待付款", "待发货", "已发货", "运输中", "已收货", "已完成", "已取消"]
-        status = result.get("status", "")
+        valid_statuses = ["CANCELED", "CLOSED", "COMPLETE", "PROCESSING", "PENDING"]
+        status = result.get("order_status", "")
         if status and status not in valid_statuses:
             warnings.append(f"订单状态异常: {status}")
 
-        # Check amount
-        amount = result.get("amount", 0)
-        if amount > 100000:
-            notifications.append(f"高价值订单: ¥{amount:,.2f}")
+        # Check benefit
+        benefit = result.get("benefit_per_order", 0)
+        if benefit and benefit > 100000:
+            notifications.append(f"高价值订单: ¥{benefit:,.2f}")
 
         # Check cancellation
-        if status == "已取消":
+        if status == "CANCELED":
             warnings.append("订单已取消")
 
         return {"issues": issues, "warnings": warnings, "notifications": notifications}
 
-    async def _audit_logistics_trace(self, result: Dict[str, Any]) -> Dict[str, Any]:
-        """Audit logistics trace query result."""
+    async def _audit_shipment(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Audit shipment query result based on MCP query_shipment output."""
         issues = []
         warnings = []
         notifications = []
 
         # Check required fields
-        required_fields = ["tracking_no", "status", "current_location"]
+        required_fields = ["order_id", "status_description"]
         for field in required_fields:
             if field not in result:
                 issues.append(f"物流查询结果缺少必要字段: {field}")
 
-        # Check tracking number
-        tracking_no = result.get("tracking_no", "")
-        if not tracking_no or len(tracking_no) < 8:
-            issues.append("运单号无效或过短")
+        # Check delivery risk
+        late_delivery_risk = result.get("late_delivery_risk")
+        if late_delivery_risk == 1:
+            warnings.append("存在延迟交付风险")
 
-        # Check delivery time
-        eta = result.get("eta")
-        if eta:
-            try:
-                eta_date = datetime.fromisoformat(eta.replace('Z', '+00:00'))
-                today = datetime.now()
-                if eta_date - today > timedelta(days=30):
-                    warnings.append(f"预计送达时间异常延迟: {eta}")
-            except (ValueError, TypeError):
-                warnings.append("预计送达时间格式无效")
-
-        # Check status
-        status = result.get("status", "")
-        valid_statuses = ["已揽收", "运输中", "到达中转场", "派送中", "已签收", "已退回"]
-        if status and status not in valid_statuses:
-            warnings.append(f"物流状态异常: {status}")
-
-        # Check for long delay
-        events = result.get("events", [])
-        if events:
-            last_event = events[-1]
-            event_time = last_event.get("timestamp")
-            if event_time:
-                try:
-                    event_date = datetime.fromisoformat(event_time.replace('Z', '+00:00'))
-                    today = datetime.now()
-                    if today - event_date > timedelta(days=7):
-                        warnings.append("物流信息超过7天未更新")
-                except (ValueError, TypeError):
-                    pass
+        # Check shipping date
+        shipping_date = result.get("shipping_date")
+        if not shipping_date:
+            notifications.append("订单尚未发货")
 
         return {"issues": issues, "warnings": warnings, "notifications": notifications}
 
@@ -255,16 +229,16 @@ class AuditorAgent:
         """Validate consistency across multiple tool results."""
         issues = []
 
-        # Check if order and logistics results match
-        if "query_order_status" in tool_results and "get_logistics_trace" in tool_results:
-            order_result = tool_results["query_order_status"]
-            logistics_result = tool_results["get_logistics_trace"]
+        # Check if order and shipment results match
+        if "query_order" in tool_results and "query_shipment" in tool_results:
+            order_result = tool_results["query_order"]
+            shipment_result = tool_results["query_shipment"]
 
-            order_tracking = order_result.get("tracking_no")
-            logistics_tracking = logistics_result.get("tracking_no")
+            order_id = order_result.get("order_id")
+            shipment_order_id = shipment_result.get("order_id")
 
-            if order_tracking and logistics_tracking and order_tracking != logistics_tracking:
-                issues.append("订单运单号与物流查询运单号不匹配")
+            if order_id and shipment_order_id and order_id != shipment_order_id:
+                issues.append("订单ID与物流查询订单ID不匹配")
 
         return issues
 
@@ -274,15 +248,15 @@ class AuditorAgent:
 
         for tool_name, result in tool_results.items():
             # Check for contradictory information
-            if tool_name == "query_order_status":
-                status = result.get("status", "")
-                tracking_no = result.get("tracking_no", "")
+            if tool_name == "query_order":
+                order_status = result.get("order_status", "")
+                delivery_status = result.get("delivery_status", "")
 
-                if status == "待发货" and tracking_no:
-                    issues.append("订单状态为待发货但已有运单号，可能数据不一致")
+                if order_status == "CANCELED" and delivery_status == "Shipping":
+                    issues.append("订单已取消但配送状态为运输中，可能数据不一致")
 
-                elif status == "已发货" and not tracking_no:
-                    issues.append("订单状态为已发货但缺少运单号")
+                elif order_status == "PROCESSING" and delivery_status == "Late delivery":
+                    warnings.append("订单处理中但配送已延迟")
 
         return issues
 

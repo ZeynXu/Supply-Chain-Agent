@@ -5,12 +5,19 @@
 [![Documentation](https://img.shields.io/badge/docs-中文文档-green.svg)](./docs/)
 [![Architecture](https://img.shields.io/badge/Architecture-Multi--Agent-blue.svg)](#)
 
-> **English** | An L3 autonomous agent system for intelligent supply chain work order processing. Four specialized AI agents (orchestrator, parser, executor, auditor) collaborate through LangGraph workflow with human-in-the-loop support — achieving 72% task success rate and 2.1s average response time.
->
-> **Tech Stack**: Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
->
-> **[中文文档见下方 ↓](#项目背景与价值)**
 
+基于LangGraph框架构建的智能供应链工单处理Agent系统。本项目将多智能体协作技术应用于供应链运营场景，通过四Agent星型拓扑架构协同工作，为企业提供智能化的工单处理能力。
+> **技术栈**：Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
+
+An intelligent agent system for supply chain work order processing built on the LangGraph framework. This project applies multi-agent collaboration technology to supply chain operations, enabling four agents to work together in a star topology architecture, delivering intelligent work order processing capabilities for enterprises.
+> **Tech Stack**: Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
+
+---
+> **更新记录**[持续更新中]
+> 2026-05-13: 初始版本发布
+> 2026-05-23: 重构数据架构，真实数据库交互替代Mock数据响应
+> 2026-05-23: 更新MCP工具
+> 2026-05-24: 优化Executor Agent执行调用工具；优化意图识别实体提取
 ---
 
 > 🎯 **项目定位**: L3级自主Agent系统，为供应链运营团队提供协作副驾驶能力
@@ -18,8 +25,6 @@
 > 💡 **核心理念**: 基于LangGraph多智能体协作，实现意图识别、工具调用、结果审计的完整工单处理流程
 >
 > 🏭 **应用场景**: 供应链运营专员工单处理、跨系统查询、异常上报、审批流转
-
-基于LangGraph框架构建的智能供应链工单处理Agent系统。本项目将多智能体协作技术应用于供应链运营场景，通过四Agent星型拓扑架构，为企业提供智能化的工单处理能力。
 
 ## 🎯 项目背景与价值
 
@@ -71,12 +76,16 @@ Supply-Chain-Agent/
 │   │   ├── checkpoint.py         # 检查点管理
 │   │   └── knowledge_retriever.py# 知识检索器
 │   ├── prompts/                  # Prompt模板
+│   ├── nlp/                    # NLP模块
+│   │   └── bert_ner.py         # BERT实体识别
 │   ├── data/                     # Python数据模块
 │   │   ├── supply_chain.db       # 业务数据库(运行时)
 │   │   ├── agent_memory.db       # 记忆数据库(运行时)
 │   │   ├── vector_store/         # 向量存储(运行时)
 │   │   ├── supply_chain_db.py    # 数据库操作
 │   │   └── data_loader.py        # 数据加载器
+│   ├── models/                   # 模型文件
+│   │   └── bert-chinese-wwm/     # BERT中文预训练模型
 │   ├── frontend/                 # React前端
 │   ├── app.py                    # FastAPI应用
 │   ├── run.py                    # 运行脚本
@@ -121,12 +130,15 @@ Supply-Chain-Agent/
 
 ### 🔧 技术栈选型
 
+### 🧠 LLM与NLP
+
 | 技术领域 | 选型方案 | 选择理由 |
 |---------|---------|---------|
 | **🧠 Agent框架** | LangGraph + LangChain | 成熟的多智能体编排和状态管理 |
 | **🌐 API服务** | FastAPI + Uvicorn | 高性能异步API框架 |
 | **🖥️ 前端** | React 18 + TypeScript + Ant Design 5 | 企业级UI组件库 |
-| **🧠 LLM** | 智谱GLM-4.7（可配置） | 国产大模型，成本可控 |
+| **🤖 LLM** | 智谱GLM-4.7（可配置） | 国产大模型，成本可控 |
+| **📝 NER** | BERT-base-chinese-wwm | 中文实体识别，准确率高 |
 | **📚 向量存储** | ChromaDB | 轻量级向量数据库 |
 | **💾 关系存储** | SQLite | 轻量级关系数据库 |
 
@@ -158,12 +170,12 @@ Supply-Chain-Agent/
 
 ### 🎯 核心功能
 
-- **🔍 智能意图识别**: 三级意图分类体系，支持模糊输入处理
-- **📝 多轮信息收集**: 主动澄清缺失信息，最多3次追问
-- **🔄 跨系统查询**: MCP工具调用，支持订单、物流、合同查询
-- **📋 工单创建**: 自动创建质量检验、生产跟踪等工单
+- **🔍 智能意图识别**: 三级意图分类体系（信息查询/工单管理/异常上报），支持模糊输入处理
+- **📝 BERT实体识别**: 集成bert-base-chinese-wwm模型，准确提取订单号、客户ID、工单号等实体
+- **🔄 跨系统查询**: MCP工具调用，支持订单、物流、客户、产品查询
+- **📋 工单管理**: 创建质量检验、审批等工单，支持工单审批流转
 - **⚠️ 异常上报**: 智能异常分类和上报流程
-- **✅ 审批流转**: 支持审批操作，危险操作需二次确认
+- **✅ 审批确认**: 支持审批操作，危险操作需二次确认
 
 ### 🌐 Web管理界面
 
@@ -256,18 +268,25 @@ SCA_CIRCUIT_BREAKER_RESET_TIMEOUT=300
 #### API调用
 
 ```bash
-# 查询订单状态（通过Agent处理）
-curl -X POST http://localhost:8000/api/process \
+# 通过Agent处理用户输入（推荐）
+curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"query": "查询订单77202的状态"}'
+  -d '{"message": "订单77202的物流到哪了"}'
+
+# 查询订单（直接调用MCP工具）
+curl -X POST http://localhost:8000/api/tools/query_order \
+  -H "Content-Type: application/json" \
+  -d '{"order_id": "77202"}'
+
+# 查询物流
+curl -X POST http://localhost:8000/api/tools/query_shipment \
+  -H "Content-Type: application/json" \
+  -d '{"order_id": "77202"}'
 
 # 创建工单
-curl -X POST http://localhost:8000/api/workorders \
+curl -X POST http://localhost:8000/api/tools/create_work_order \
   -H "Content-Type: application/json" \
-  -d '{"type": "quality_inspection", "description": "订单77202到货质量抽检", "related_order": "77202"}'
-
-# 查看工单列表
-curl -X GET http://localhost:8000/api/workorders
+  -d '{"work_type": "质检", "description": "订单77202质量检验", "order_id": "77202"}'
 
 # 查看系统状态
 curl -X GET http://localhost:8000/api/status
@@ -284,7 +303,12 @@ from supply_chain_agent.agents.orchestrator import OrchestratorAgent
 
 async def main():
     agent = OrchestratorAgent()
-    result = await agent.process("查询订单77202的物流状态")
+    # 物流查询
+    result = await agent.process("订单77202的物流到哪了")
+    print(result["response"])
+
+    # 创建工单
+    result = await agent.process("创建质检工单，订单77202")
     print(result["response"])
 
 asyncio.run(main())
@@ -306,14 +330,38 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 ## 📊 支持的意图
 
-| 意图类型 | 示例输入 | 调用工具 |
-|----------|----------|----------|
-| **状态查询** | "查询订单77202的状态" | query_order_status |
-| **物流查询** | "订单77202的物流到哪了" | get_logistics_trace |
-| **工单创建** | "创建质量检验工单，订单77202需要检验" | create_work_order |
-| **异常上报** | "报告物流延迟问题，订单75939预计延迟3天" | report_issue |
-| **审批流转** | "审批工单WO-2026-XXX" | approve_work_order |
-| **合同查询** | "查找采购合同模板" | search_contract_template |
+### 任务分类体系 (V2.1)
+
+**一级任务分类**：
+
+| 一级任务 | 描述 | 包含二级任务 |
+|----------|------|--------------|
+| **信息查询** | 查询客户、订单、产品、物流等信息 | 客户查询、订单查询、产品查询、物流查询 |
+| **工单管理** | 创建和审批工单 | 创建工单、审批工单 |
+| **异常上报** | 上报供应链过程中的问题 | 异常上报 |
+
+**二级任务与MCP工具映射**：
+
+| 二级任务 | 调用工具 | 必需参数 | 可选参数 |
+|----------|----------|----------|----------|
+| **客户查询** | query_customer | customer_id | - |
+| **订单查询** | query_order | order_id | - |
+| **产品查询** | query_product | product_card_id | - |
+| **物流查询** | query_shipment | order_id | - |
+| **创建工单** | create_work_order | work_type, description | order_id, customer_id, priority |
+| **审批工单** | approve_work_order | work_order_id, action | comment |
+| **异常上报** | report_issue | issue_type, description | order_id, urgency |
+
+### 使用示例
+
+| 用户输入示例 | 识别意图 | 调用工具 |
+|--------------|----------|----------|
+| "查询订单77202的状态" | 信息查询→订单查询 | query_order |
+| "订单77202的物流到哪了" | 信息查询→物流查询 | query_shipment |
+| "客户20755的信息" | 信息查询→客户查询 | query_customer |
+| "创建质检工单，订单77202" | 工单管理→创建工单 | create_work_order |
+| "审批工单WO-2024-001通过" | 工单管理→审批工单 | approve_work_order |
+| "报告订单75939物流延迟" | 异常上报 | report_issue |
 
 ## 📈 应用效果
 
@@ -328,19 +376,24 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 ### 🏭 典型应用场景
 
-#### 案例一：订单状态查询
+#### 案例一：订单查询
 - **用户输入**: "查询订单77202的状态"
-- **处理流程**: 意图识别 → 实体提取 → 订单查询 → 物流追踪 → 审计验证 → 响应生成
+- **处理流程**: 意图识别→订单查询 → 实体提取(order_id=77202) → 调用query_order工具 → 审计验证 → 响应生成
 - **输出结果**: "订单77202状态为COMPLETE，配送状态为Advance shipping"
 
-#### 案例二：工单创建
-- **用户输入**: "创建质量检验工单，订单77202需要检验"
-- **处理流程**: 意图识别 → 槽位填充 → 工单创建 → 审计验证 → 响应生成
-- **输出结果**: "已创建质量检验工单WO-2026-XXX，关联订单77202"
+#### 案例二：物流查询
+- **用户输入**: "订单77202的物流到哪了"
+- **处理流程**: 意图识别→物流查询 → 实体提取(order_id=77202) → 调用query_shipment工具 → 审计验证 → 响应生成
+- **输出结果**: 物流轨迹信息和当前状态
 
-#### 案例三：异常上报
-- **用户输入**: "报告物流延迟问题，订单75939预计延迟3天"
-- **处理流程**: 意图识别 → 异常分类 → 异常上报 → 响应生成
+#### 案例三：工单创建
+- **用户输入**: "创建质检工单，订单77202需要检验"
+- **处理流程**: 意图识别→创建工单 → 实体提取(work_type=质检, order_id=77202) → 调用create_work_order工具 → 审计验证 → 响应生成
+- **输出结果**: "已创建质检工单WO-2026-XXX，关联订单77202"
+
+#### 案例四：异常上报
+- **用户输入**: "报告订单75939物流延迟问题"
+- **处理流程**: 意图识别→异常上报 → 实体提取(issue_type=物流延迟, order_id=75939) → 调用report_issue工具 → 响应生成
 - **输出结果**: "已上报物流延迟异常，工单号ISS-2026-XXX，已通知相关责任人"
 
 ## 🏗️ 架构设计
@@ -415,15 +468,20 @@ graph TD
    - 短期+工作+长期记忆，支持RAG检索
    - SOP知识库增强，提升决策质量
 
-4. **🛡️ 熔断器模式**
+4. **📝 BERT中文实体识别**
+   - 基于bert-base-chinese-wwm的实体识别模块
+   - 规则+BERT混合提取，准确率更高
+   - 支持订单号、客户ID、工单号等多种实体类型
+
+5. **🛡️ 熔断器模式**
    - 工具调用熔断保护，防止故障扩散
    - 多种重试策略，智能降级
 
 ### 🚀 工程实践
 
-1. **⚡ 规则+LLM融合**
-   - 意图识别优先规则引擎，降低LLM调用频率
-   - 低置信度时调用LLM补充
+1. **⚡ 规则+BERT融合**
+   - 实体识别优先规则引擎，BERT语义补充
+   - 双重保障，提取准确率更高
 
 2. **📉 知识库降级**
    - 工具不可用时，知识库检索+LLM生成友好提示
@@ -436,6 +494,10 @@ graph TD
 4. **📊 四维评估体系**
    - 效果、效率、体验、稳定性四维评估
    - 量化指标，持续优化
+
+5. **🔗 MCP工具对齐**
+   - 10个MCP工具完整实现，无虚构工具调用
+   - 参数验证严格，可选参数按需传递
 
 ## 📂 数据说明
 

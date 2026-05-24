@@ -3,6 +3,10 @@ Executor Agent (调度员)
 
 Responsible for tool orchestration and concurrent control.
 Enhanced with intelligent retry mechanism and circuit breaker.
+
+Task Classification:
+- Level 1: 信息查询、工单管理、异常上报
+- Level 2: Based on MCP tools provided
 """
 
 from typing import Dict, Any, List, Optional
@@ -43,29 +47,105 @@ class Task:
 class ExecutorAgent:
     """Executor agent for tool orchestration and execution."""
 
-    # Tool mapping for different intents (supports both intent_level_1 and intent_level_2)
-    TOOL_MAPPING = {
-        # intent_level_2 mappings (more specific)
-        "物流查询": ["query_order_status", "get_logistics_trace"],
-        "订单状态查询": ["query_order_status"],
-        "合同查询": ["search_contract_template"],
-        "审批流转": ["approve_work_order"],
-        "审批处理": ["approve_work_order"],
-        "审批通过": ["approve_work_order"],
-        "审批拒绝": ["approve_work_order"],
-        "工单创建": ["create_work_order"],
-        "质量检验工单": ["create_work_order"],
-        "生产跟踪工单": ["create_work_order"],
-        "物流异常工单": ["create_work_order"],
-        "通用工单": ["create_work_order"],
-        "异常上报": ["report_issue"],
-        "物流异常": ["report_issue"],
-        "质量异常": ["report_issue"],
-        "生产异常": ["report_issue"],
-        "通用异常": ["report_issue"],
-        # intent_level_1 mappings (fallback)
-        "状态查询": ["query_order_status"],
+    # ==========================================
+    # Task Classification
+    # ==========================================
+
+    # 一级任务分类
+    LEVEL_1_TASKS = {
+        "信息查询": "查询客户、订单、产品、物流等信息",
+        "工单管理": "创建和审批工单",
+        "异常上报": "上报供应链过程中的问题"
     }
+
+    # 二级任务分类
+    LEVEL_2_TASKS = {
+        # 信息查询类
+        "客户查询": {"tool": "query_customer", "level1": "信息查询"},
+        "客户订单查询": {"tool": "query_customer_orders", "level1": "信息查询"},
+        "订单查询": {"tool": "query_order", "level1": "信息查询"},
+        "订单明细查询": {"tool": "query_order_items", "level1": "信息查询"},
+        "产品查询": {"tool": "query_product", "level1": "信息查询"},
+        "物流查询": {"tool": "query_shipment", "level1": "信息查询"},
+        "客户统计查询": {"tool": "query_customer_statistics", "level1": "信息查询"},
+        # 工单管理类
+        "创建工单": {"tool": "create_work_order", "level1": "工单管理"},
+        "审批工单": {"tool": "approve_work_order", "level1": "工单管理"},
+        # 异常上报类
+        "上报问题": {"tool": "report_issue", "level1": "异常上报"},
+    }
+
+    # Tool mapping for intent parsing (intent_level_2 -> tool_name)
+    TOOL_MAPPING = {
+        # 信息查询类
+        "客户查询": "query_customer",
+        "客户订单查询": "query_customer_orders",
+        "订单查询": "query_order",
+        "订单明细查询": "query_order_items",
+        "产品查询": "query_product",
+        "物流查询": "query_shipment",
+        "客户统计查询": "query_customer_statistics",
+        # 工单管理类
+        "创建工单": "create_work_order",
+        "审批工单": "approve_work_order",
+        # 异常上报类
+        "上报问题": "report_issue",
+        # 兼容旧版intent映射
+        "信息查询": "query_order",
+        "工单管理": "create_work_order",
+        "异常上报": "report_issue",
+    }
+
+    # MCP工具参数定义
+    TOOL_PARAMS = {
+        "query_customer": {
+            "required": ["customer_id"],
+            "optional": []
+        },
+        "query_customer_orders": {
+            "required": ["customer_id"],
+            "optional": ["limit", "offset"]
+        },
+        "query_order": {
+            "required": ["order_id"],
+            "optional": []
+        },
+        "query_order_items": {
+            "required": ["order_id"],
+            "optional": []
+        },
+        "query_product": {
+            "required": ["product_card_id"],
+            "optional": []
+        },
+        "query_shipment": {
+            "required": ["order_id"],
+            "optional": []
+        },
+        "query_customer_statistics": {
+            "required": ["customer_id"],
+            "optional": []
+        },
+        "create_work_order": {
+            "required": ["work_type", "description"],
+            "optional": ["priority", "order_id", "assigned_to"]
+        },
+        "approve_work_order": {
+            "required": ["work_order_id", "action"],
+            "optional": ["comment", "approver"]
+        },
+        "report_issue": {
+            "required": ["issue_type", "description"],
+            "optional": ["urgency", "affected_order", "reported_by"]
+        },
+    }
+
+    # 有效值定义 (来自MCP Server)
+    VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
+    VALID_PRIORITIES = ["高", "中", "低"]
+    VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
+    VALID_URGENCIES = ["高", "中", "低"]
+    VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 
     def __init__(self):
         self.task_queue: List[Task] = []
@@ -96,6 +176,21 @@ class ExecutorAgent:
         else:
             self.retry_manager = None
 
+    def get_available_tools(self) -> Dict[str, Any]:
+        """获取所有可用工具及其参数定义"""
+        return {
+            "level_1_tasks": self.LEVEL_1_TASKS,
+            "level_2_tasks": self.LEVEL_2_TASKS,
+            "tool_params": self.TOOL_PARAMS,
+            "valid_values": {
+                "work_types": self.VALID_WORK_TYPES,
+                "priorities": self.VALID_PRIORITIES,
+                "issue_types": self.VALID_ISSUE_TYPES,
+                "urgencies": self.VALID_URGENCIES,
+                "approve_actions": self.VALID_APPROVE_ACTIONS
+            }
+        }
+
     async def execute_task(self, task_name: str, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a specific task.
@@ -110,12 +205,23 @@ class ExecutorAgent:
         # Map task to tool and parameters
         tool_name, parameters = self._map_task_to_tool(task_name, extracted_slots)
 
+        # Validate parameters
+        validation_result = self._validate_tool_params(tool_name, parameters)
+        if not validation_result["valid"]:
+            return {
+                "error": validation_result["message"],
+                "task": task_name,
+                "tool": tool_name,
+                "success": False,
+                "error_type": "validation_failed"
+            }
+
         # Create task
         task = Task(
             name=task_name,
             tool_name=tool_name,
             parameters=parameters,
-            priority=self._get_task_priority(task_name)
+            priority=self._get_task_priority(tool_name)
         )
 
         # Execute task
@@ -133,50 +239,147 @@ class ExecutorAgent:
         return result
 
     def _map_task_to_tool(self, task_name: str, extracted_slots: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
-        """Map task name to tool and parameters."""
-        # Default mapping
-        if task_name == "query_order_status":
-            return "query_order_status", {"order_id": extracted_slots.get("order_id")}
-        elif task_name == "get_logistics_trace":
-            return "get_logistics_trace", {"tracking_no": extracted_slots.get("tracking_no")}
-        elif task_name == "search_contract_template":
-            return "search_contract_template", {"query": extracted_slots.get("query", ""), "top_k": 2}
-        elif task_name == "approve_work_order":
-            return "approve_work_order", {
-                "order_id": extracted_slots.get("work_order_id"),
-                "comment": extracted_slots.get("comment", "系统自动审批")
+        """Map task name to tool and parameters based on MCP tool definitions."""
+
+        # Get tool name from mapping
+        tool_name = self.TOOL_MAPPING.get(task_name, task_name)
+
+        # Build parameters based on tool type
+        if tool_name == "query_customer":
+            return "query_customer", {
+                "customer_id": extracted_slots.get("customer_id")
             }
-        elif task_name == "create_work_order":
-            return "create_work_order", {
-                "work_type": extracted_slots.get("work_type"),
-                "description": extracted_slots.get("description"),
-                "priority": extracted_slots.get("priority", "中"),
-                "assigned_to": extracted_slots.get("assigned_to"),
+
+        elif tool_name == "query_customer_orders":
+            return "query_customer_orders", {
+                "customer_id": extracted_slots.get("customer_id"),
+                "limit": extracted_slots.get("limit", 20),
+                "offset": extracted_slots.get("offset", 0)
+            }
+
+        elif tool_name == "query_order":
+            return "query_order", {
                 "order_id": extracted_slots.get("order_id")
             }
-        elif task_name == "report_issue":
-            return "report_issue", {
-                "issue_type": extracted_slots.get("issue_type"),
-                "description": extracted_slots.get("description"),
-                "urgency": extracted_slots.get("urgency", "中"),
-                "affected_order": extracted_slots.get("order_id"),  # 使用order_id作为affected_order
-                "reported_by": extracted_slots.get("reported_by")
+
+        elif tool_name == "query_order_items":
+            return "query_order_items", {
+                "order_id": extracted_slots.get("order_id")
             }
 
-        # Fallback: try to use task_name as tool_name
-        return task_name, extracted_slots
+        elif tool_name == "query_product":
+            return "query_product", {
+                "product_card_id": extracted_slots.get("product_card_id")
+            }
 
-    def _get_task_priority(self, task_name: str) -> int:
-        """Get priority for a task."""
+        elif tool_name == "query_shipment":
+            return "query_shipment", {
+                "order_id": extracted_slots.get("order_id")
+            }
+
+        elif tool_name == "query_customer_statistics":
+            return "query_customer_statistics", {
+                "customer_id": extracted_slots.get("customer_id")
+            }
+
+        elif tool_name == "create_work_order":
+            work_type = extracted_slots.get("work_type", "其他")
+            # 验证work_type
+            if work_type not in self.VALID_WORK_TYPES:
+                work_type = "其他"
+
+            priority = extracted_slots.get("priority", "中")
+            if priority not in self.VALID_PRIORITIES:
+                priority = "中"
+
+            params = {
+                "work_type": work_type,
+                "description": extracted_slots.get("description", ""),
+                "priority": priority,
+            }
+            # 只有有值时才添加可选参数
+            if extracted_slots.get("order_id"):
+                params["order_id"] = extracted_slots.get("order_id")
+            if extracted_slots.get("assigned_to"):
+                params["assigned_to"] = extracted_slots.get("assigned_to")
+
+            return "create_work_order", params
+
+        elif tool_name == "approve_work_order":
+            action = extracted_slots.get("action", "approve")
+            if action not in self.VALID_APPROVE_ACTIONS:
+                action = "approve"
+
+            return "approve_work_order", {
+                "work_order_id": extracted_slots.get("work_order_id"),
+                "action": action,
+                "comment": extracted_slots.get("comment", ""),
+                "approver": extracted_slots.get("approver", "Agent System")
+            }
+
+        elif tool_name == "report_issue":
+            issue_type = extracted_slots.get("issue_type", "其他")
+            if issue_type not in self.VALID_ISSUE_TYPES:
+                issue_type = "其他"
+
+            urgency = extracted_slots.get("urgency", "中")
+            if urgency not in self.VALID_URGENCIES:
+                urgency = "中"
+
+            params = {
+                "issue_type": issue_type,
+                "description": extracted_slots.get("description", ""),
+                "urgency": urgency,
+                "reported_by": extracted_slots.get("reported_by", "Agent System")
+            }
+            # 只有有值时才添加可选参数
+            if extracted_slots.get("order_id"):
+                params["affected_order"] = extracted_slots.get("order_id")
+
+            return "report_issue", params
+
+        # Fallback: return task_name as tool_name with extracted slots
+        return tool_name, extracted_slots
+
+    def _validate_tool_params(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate tool parameters against required params."""
+        if tool_name not in self.TOOL_PARAMS:
+            return {"valid": True, "message": "Unknown tool, skipping validation"}
+
+        required_params = self.TOOL_PARAMS[tool_name]["required"]
+        missing_params = []
+
+        for param in required_params:
+            value = parameters.get(param)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                missing_params.append(param)
+
+        if missing_params:
+            return {
+                "valid": False,
+                "message": f"缺少必要参数: {', '.join(missing_params)}"
+            }
+
+        return {"valid": True, "message": "参数验证通过"}
+
+    def _get_task_priority(self, tool_name: str) -> int:
+        """Get priority for a task based on tool type."""
         priority_map = {
-            "query_order_status": 1,
-            "get_logistics_trace": 2,
-            "search_contract_template": 3,
-            "approve_work_order": 0,  # Lowest priority as it requires confirmation
+            # 信息查询类 (优先级较低)
+            "query_customer": 3,
+            "query_customer_orders": 3,
+            "query_order": 2,
+            "query_order_items": 3,
+            "query_product": 3,
+            "query_shipment": 2,
+            "query_customer_statistics": 3,
+            # 工单管理类
             "create_work_order": 1,
-            "report_issue": 2  # 异常上报优先级较高
+            "approve_work_order": 0,  # 需要确认，优先级最低
+            # 异常上报类 (优先级最高)
+            "report_issue": 0  # 异常上报优先级最高
         }
-        return priority_map.get(task_name, 1)
+        return priority_map.get(tool_name, 2)
 
     async def _execute_tool(self, task: Task) -> Dict[str, Any]:
         """Execute a tool with intelligent retry logic."""
@@ -193,12 +396,6 @@ class ExecutorAgent:
                     tool_name=task.tool_name,
                     **task.parameters
                 )
-
-                # Check if approval requires confirmation
-                if task.tool_name == "approve_work_order":
-                    if result.get("requires_confirmation", False):
-                        result["needs_user_confirmation"] = True
-                        result["confirmation_message"] = result.get("confirmation_message", "需要用户确认")
 
                 # 记录执行成功
                 self._record_tool_execution(task, result, True)
@@ -234,12 +431,6 @@ class ExecutorAgent:
 
                 # Call the tool
                 result = await client.call_tool(task.tool_name, **task.parameters)
-
-                # Check if approval requires confirmation
-                if task.tool_name == "approve_work_order":
-                    if result.get("requires_confirmation", False):
-                        result["needs_user_confirmation"] = True
-                        result["confirmation_message"] = result.get("confirmation_message", "需要用户确认")
 
                 self._record_tool_execution(task, result, True)
                 return result
@@ -316,6 +507,20 @@ class ExecutorAgent:
             else:
                 tool_stats[tool_name]["failures"] += 1
 
+        # 按一级任务分类统计
+        level1_stats = {}
+        for record in self.execution_history:
+            tool_name = record.get("tool", "unknown")
+            level1 = self._get_level1_by_tool(tool_name)
+            if level1 not in level1_stats:
+                level1_stats[level1] = {"executions": 0, "successes": 0, "failures": 0}
+
+            level1_stats[level1]["executions"] += 1
+            if record.get("success", False):
+                level1_stats[level1]["successes"] += 1
+            else:
+                level1_stats[level1]["failures"] += 1
+
         # 添加重试管理器统计（如果可用）
         retry_stats = {}
         if self.retry_manager and RETRY_MANAGER_AVAILABLE:
@@ -327,9 +532,17 @@ class ExecutorAgent:
             "failure_count": total_count - success_count,
             "success_rate": round(success_rate * 100, 2),
             "tool_statistics": tool_stats,
+            "level1_statistics": level1_stats,
             "retry_statistics": retry_stats,
             "last_update": time.strftime("%Y-%m-%d %H:%M:%S")
         }
+
+    def _get_level1_by_tool(self, tool_name: str) -> str:
+        """根据工具名获取一级任务分类"""
+        for task_name, task_info in self.LEVEL_2_TASKS.items():
+            if task_info["tool"] == tool_name:
+                return task_info["level1"]
+        return "其他"
 
     async def create_execution_plan(self, intent: Dict[str, Any]) -> List[str]:
         """
@@ -352,35 +565,25 @@ class ExecutorAgent:
                 slot_dict[entity.get("type")] = entity.get("value")
 
         # First try intent_level_2 (more specific), then intent_level_1 (fallback)
-        tasks = self.TOOL_MAPPING.get(intent_level_2,
-                                        self.TOOL_MAPPING.get(intent_level_1, []))
+        tool_name = self.TOOL_MAPPING.get(intent_level_2,
+                                          self.TOOL_MAPPING.get(intent_level_1, ""))
 
-        # Filter tasks based on available slots
-        filtered_tasks = []
-        for task in tasks:
-            if self._can_execute_task(task, slot_dict):
-                filtered_tasks.append(task)
-
-        if filtered_tasks:
-            return filtered_tasks
+        if tool_name and self._can_execute_tool(tool_name, slot_dict):
+            return [tool_name]
 
         # Default plan for unknown intents
-        return ["query_order_status"]  # Default fallback
+        return ["query_order"]  # Default fallback
 
-    def _can_execute_task(self, task_name: str, slots: Dict[str, Any]) -> bool:
-        """Check if a task can be executed with available slots."""
-        required_params = {
-            "query_order_status": ["order_id"],
-            "get_logistics_trace": ["tracking_no"],
-            "approve_work_order": ["work_order_id"],
-            "create_work_order": ["work_type", "description"],
-            "report_issue": ["issue_type", "description"]
-        }
+    def _can_execute_tool(self, tool_name: str, slots: Dict[str, Any]) -> bool:
+        """Check if a tool can be executed with available slots."""
+        if tool_name not in self.TOOL_PARAMS:
+            return False
 
-        if task_name in required_params:
-            for param in required_params[task_name]:
-                if param not in slots or not slots[param]:
-                    return False
+        required_params = self.TOOL_PARAMS[tool_name]["required"]
+
+        for param in required_params:
+            if param not in slots or not slots[param]:
+                return False
 
         return True
 
@@ -404,6 +607,12 @@ class ExecutorAgent:
         task_objects = []
         for task_name in tasks:
             tool_name, parameters = self._map_task_to_tool(task_name, extracted_slots)
+
+            # Validate parameters
+            validation_result = self._validate_tool_params(tool_name, parameters)
+            if not validation_result["valid"]:
+                continue  # Skip invalid tasks
+
             task = Task(
                 name=task_name,
                 tool_name=tool_name,
@@ -439,7 +648,7 @@ class ExecutorAgent:
     def get_execution_summary(self) -> Dict[str, Any]:
         """Get summary of execution history."""
         total_tasks = len(self.execution_history)
-        successful_tasks = sum(1 for task in self.execution_history if task.get("result", {}).get("success", True))
+        successful_tasks = sum(1 for task in self.execution_history if task.get("success", False))
         failed_tasks = total_tasks - successful_tasks
 
         return {

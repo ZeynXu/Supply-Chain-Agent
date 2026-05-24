@@ -290,6 +290,9 @@ class SupplyChainWorkflow:
                         if result.get("error") or result.get("success") == False:
                             # Extract user-friendly error message
                             error_detail = result.get("error", "未知错误")
+                            # Handle dict type error
+                            if isinstance(error_detail, dict):
+                                error_detail = error_detail.get("message", str(error_detail))
                             # Clean up error message
                             if "Order" in error_detail and "not found" in error_detail:
                                 # Extract order ID from error

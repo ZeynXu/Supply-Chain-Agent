@@ -1,9 +1,8 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.0  
-**生成日期**: 2026年5月23日  
+**文档版本**: V2.1  
+**生成日期**: 2026年5月24日  
 **研究范围**: 完整项目代码与文档分析  
-**数据架构**: 已重构为使用真实数据源，遵循 DATA_ARCHITECTURE.md  
 
 ---
 
@@ -41,7 +40,7 @@
 
 | 模块 | 功能描述 | 技术实现 |
 |------|----------|----------|
-| **意图识别** | 三级意图分类体系，支持模糊输入处理 | 规则引擎 + LLM（智谱GLM-4.7） |
+| **意图识别** | 三级意图分类体系，支持模糊输入处理 | 规则引擎 + LLM（智谱GLM-4.7）+ BERT NER |
 | **多轮信息收集** | 主动澄清缺失信息，最多3次追问 | LangGraph interrupt机制 |
 | **跨系统查询** | MCP工具调用，支持熔断降级 | FastMCP + 熔断器模式 |
 | **报告生成** | 多模态输出卡片，结构化响应 | ReportGenerator |
@@ -60,6 +59,14 @@ Supply_Chain_Agent/
 │   │   ├── report_generator.py   # 报告生成器 - 响应格式化
 │   │   ├── retry_manager.py      # 重试管理器 - 智能重试与熔断
 │   │   └── llm_client.py         # LLM客户端 - 统一LLM接口
+│   ├── nlp/                      # NLP模块 (新增)
+│   │   ├── bert_ner.py           # BERT NER实体识别
+│   │   └── __init__.py           # 模块初始化
+│   ├── models/                   # 模型文件 (新增)
+│   │   └── bert-chinese-wwm/     # BERT中文预训练模型
+│   │       ├── config.json       # 模型配置
+│   │       ├── pytorch_model.bin # 模型权重 (~393MB)
+│   │       └── vocab.txt         # 词表文件
 │   ├── tools/                    # MCP工具实现
 │   │   ├── server.py             # MCP服务器 - 工具服务端
 │   │   └── client.py             # 工具客户端 - 带熔断保护
@@ -223,13 +230,13 @@ Supply_Chain_Agent/
 │  │   MCP Tools     │  │  Memory System  │                  │
 │  │ ┌─────────────┐ │  │ ┌─────────────┐ │                  │
 │  │ │query_order  │ │  │ │ Short-term  │ │                  │
-│  │ │get_logistics│ │  │ │ Working     │ │                  │
-│  │ │search_contract│ │  │ │ Long-term   │ │                  │
-│  │ │approve_order│ │  │ └─────────────┘ │                  │
-│  │ │create_order │ │  │                 │                  │
-│  │ │report_issue │ │  │ ┌─────────────┐ │                  │
-│  │ └─────────────┘ │  │ │  ChromaDB   │ │                  │
-│  └─────────────────┘  │ │  SQLite     │ │                  │
+│  │ │query_shipment│ │  │ │ Working     │ │                  │
+│  │ │query_customer│ │  │ │ Long-term   │ │                  │
+│  │ │create_order │ │  │ └─────────────┘ │                  │
+│  │ │report_issue │ │  │                 │                  │
+│  │ └─────────────┘ │  │ ┌─────────────┐ │                  │
+│  └─────────────────┘  │ │  ChromaDB   │ │                  │
+│                       │ │  SQLite     │ │                  │
 │                       │ └─────────────┘ │                  │
 │                       └─────────────────┘                  │
 └─────────────────────────────────────────────────────────────┘
@@ -291,23 +298,24 @@ def __init__(self,
 
 **核心职责**：
 - 三级意图识别
-- 实体提取
+- 实体提取（规则 + BERT NER）
 - 槽位填充
-- 模糊输入处理（规则+LLM融合）
+- 模糊输入处理
 
-**三级意图分类体系**：
+**任务分类体系（V2.1更新）**：
 
-| 一级意图 | 二级意图 | 三级意图（槽位） |
-|----------|----------|------------------|
-| 状态查询 | 物流查询 | order_id, tracking_no |
-| 状态查询 | 订单状态查询 | order_id |
-| 状态查询 | 合同查询 | query |
-| 工单创建 | 质量检验工单 | work_type, description, order_id |
-| 工单创建 | 生产跟踪工单 | work_type, description |
-| 异常上报 | 物流异常 | issue_type, description, order_id |
-| 异常上报 | 质量异常 | issue_type, description |
-| 审批流转 | 审批通过 | work_order_id, comment |
-| 审批流转 | 审批拒绝 | work_order_id, comment |
+| 一级意图 | 说明 | 二级意图 | 对应MCP工具 |
+|----------|------|----------|-------------|
+| **信息查询** | 查询客户、订单、产品、物流等信息 | 客户查询 | query_customer |
+| | | 客户订单查询 | query_customer_orders |
+| | | 订单查询 | query_order |
+| | | 订单明细查询 | query_order_items |
+| | | 产品查询 | query_product |
+| | | 物流查询 | query_shipment |
+| | | 客户统计查询 | query_customer_statistics |
+| **工单管理** | 创建和审批工单 | 创建工单 | create_work_order |
+| | | 审批工单 | approve_work_order |
+| **异常上报** | 上报供应链过程中的问题 | 上报问题 | report_issue |
 
 **意图识别流程**：
 
@@ -317,7 +325,7 @@ async def parse_intent(self, text: str) -> Dict[str, Any]:
     1. 规则引擎快速路径（正则匹配）
     2. 检测一级意图
     3. 检测二级意图
-    4. 提取实体
+    4. 提取实体（规则 + BERT NER）
     5. 根据实体细化二级意图
     6. 判断是否需要LLM补充
     7. 如果需要，调用LLM进行意图识别
@@ -325,14 +333,15 @@ async def parse_intent(self, text: str) -> Dict[str, Any]:
     """
 ```
 
-**实体提取模式**：
+**实体提取模式（V2.1更新）**：
 ```python
 ENTITY_PATTERNS = {
-    "order_id": r"(PO|订单)[-_]?\d{4}[-_]?\d{3,}",
-    "tracking_no": r"[A-Z]{2}\d{9,11}[A-Z]?|\d{12,14}",
-    "work_order_id": r"WO[-_]?\d{4}[-_]?\d{3,}",
-    "work_type": r"(质量检验|生产跟踪|入库检验|维护任务|紧急响应)",
-    "issue_type": r"(物流延迟|货物损坏|供应短缺|生产异常|系统故障|其他异常)",
+    "order_id": r"(?:订单|order)[^0-9]*(\d{4,})",
+    "customer_id": r"(?:客户|customer)[^0-9]*(\d+)",
+    "product_card_id": r"(?:产品|product)[^0-9]*(\d+)",
+    "work_order_id": r"WO[-_]?\d{1,4}[-_]?\d{1,4}",
+    "work_type": r"(质检|审批|异常处理|退款|调拨|质量检验|生产跟踪|...)",
+    "issue_type": r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他)",
     # ... 更多模式
 }
 ```
@@ -346,18 +355,55 @@ ENTITY_PATTERNS = {
 - 并发控制
 - 智能重试
 - 熔断保护
+- 参数验证
 
-**工具映射表**：
+**任务分类定义（V2.1新增）**：
 ```python
-TOOL_MAPPING = {
-    "物流查询": ["query_order_status", "get_logistics_trace"],
-    "订单状态查询": ["query_order_status"],
-    "合同查询": ["search_contract_template"],
-    "审批流转": ["approve_work_order"],
-    "工单创建": ["create_work_order"],
-    "异常上报": ["report_issue"],
-    # ...
+# 一级任务分类
+LEVEL_1_TASKS = {
+    "信息查询": "查询客户、订单、产品、物流等信息",
+    "工单管理": "创建和审批工单",
+    "异常上报": "上报供应链过程中的问题"
 }
+
+# 二级任务分类 (基于MCP工具)
+LEVEL_2_TASKS = {
+    "客户查询": {"tool": "query_customer", "level1": "信息查询"},
+    "客户订单查询": {"tool": "query_customer_orders", "level1": "信息查询"},
+    "订单查询": {"tool": "query_order", "level1": "信息查询"},
+    "订单明细查询": {"tool": "query_order_items", "level1": "信息查询"},
+    "产品查询": {"tool": "query_product", "level1": "信息查询"},
+    "物流查询": {"tool": "query_shipment", "level1": "信息查询"},
+    "客户统计查询": {"tool": "query_customer_statistics", "level1": "信息查询"},
+    "创建工单": {"tool": "create_work_order", "level1": "工单管理"},
+    "审批工单": {"tool": "approve_work_order", "level1": "工单管理"},
+    "上报问题": {"tool": "report_issue", "level1": "异常上报"},
+}
+```
+
+**MCP工具参数定义（V2.1新增）**：
+```python
+TOOL_PARAMS = {
+    "query_customer": {"required": ["customer_id"], "optional": []},
+    "query_customer_orders": {"required": ["customer_id"], "optional": ["limit", "offset"]},
+    "query_order": {"required": ["order_id"], "optional": []},
+    "query_order_items": {"required": ["order_id"], "optional": []},
+    "query_product": {"required": ["product_card_id"], "optional": []},
+    "query_shipment": {"required": ["order_id"], "optional": []},
+    "query_customer_statistics": {"required": ["customer_id"], "optional": []},
+    "create_work_order": {"required": ["work_type", "description"], "optional": ["priority", "order_id", "assigned_to"]},
+    "approve_work_order": {"required": ["work_order_id", "action"], "optional": ["comment", "approver"]},
+    "report_issue": {"required": ["issue_type", "description"], "optional": ["urgency", "affected_order", "reported_by"]},
+}
+```
+
+**有效值定义（来自MCP Server）**：
+```python
+VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
+VALID_PRIORITIES = ["高", "中", "低"]
+VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
+VALID_URGENCIES = ["高", "中", "低"]
+VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 ```
 
 **执行流程**：
@@ -365,11 +411,12 @@ TOOL_MAPPING = {
 async def execute_task(self, task_name: str, extracted_slots: Dict) -> Dict:
     """
     1. 映射任务到工具
-    2. 构建参数
-    3. 检查熔断器状态
-    4. 执行工具调用
-    5. 处理重试逻辑
-    6. 记录执行历史
+    2. 构建参数（过滤None值）
+    3. 验证参数完整性
+    4. 检查熔断器状态
+    5. 执行工具调用
+    6. 处理重试逻辑
+    7. 记录执行历史
     """
 ```
 
@@ -400,7 +447,53 @@ AUDIT_RULES = [
 3. **跨结果一致性**：多个工具结果是否一致
 4. **业务逻辑验证**：是否符合业务规则
 
-### 3.5 ReportGenerator（报告生成器）
+### 3.5 BERT NER模块（V2.1新增）
+
+**文件位置**: `supply_chain_agent/nlp/bert_ner.py`
+
+**模型信息**：
+- **模型**: bert-base-chinese-wwm (中文全词遮罩预训练模型)
+- **路径**: `supply_chain_agent/models/bert-chinese-wwm/`
+- **大小**: ~393MB
+- **设备**: 支持GPU加速
+
+**核心功能**：
+```python
+class BertNERModel:
+    def __init__(self, model_path: str, use_bert: bool = True):
+        """
+        初始化BERT NER模型
+        - use_bert=True: 使用BERT语义理解
+        - use_bert=False: 仅使用规则提取（更快）
+        """
+    
+    def extract_entities(self, text: str) -> List[Entity]:
+        """
+        混合实体提取：
+        1. 规则提取（快速、准确）
+        2. BERT语义提取（理解上下文）
+        """
+    
+    def extract_for_intent(self, text: str, intent_level_1: str) -> List[Dict]:
+        """
+        针对特定意图的实体提取，优先返回相关实体类型
+        """
+```
+
+**规则库定义**：
+```python
+rules = {
+    "order_id": [r"(?:订单|order)[^0-9]*(\d{4,})"],
+    "customer_id": [r"(?:客户|customer)[^0-9]*(\d+)"],
+    "product_card_id": [r"(?:产品|product)[^0-9]*(\d+)"],
+    "work_order_id": [r"WO[-_]?\d{1,4}[-_]?\d{1,4}"],
+    "issue_type": [r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他)"],
+    "work_type": [r"(审批|异常处理|退款|调拨|质检|其他)"],
+    # ...
+}
+```
+
+### 3.6 ReportGenerator（报告生成器）
 
 **文件位置**: `supply_chain_agent/agents/report_generator.py`
 
@@ -425,7 +518,7 @@ AUDIT_RULES = [
 }
 ```
 
-### 3.6 RetryManager（重试管理器）
+### 3.7 RetryManager（重试管理器）
 
 **文件位置**: `supply_chain_agent/agents/retry_manager.py`
 
@@ -472,6 +565,8 @@ class CircuitBreakerState(Enum):
 | **FastMCP** | 0.1.0+ | MCP工具服务 |
 | **ChromaDB** | 0.5.0+ | 向量存储 |
 | **Pydantic** | 2.0.0+ | 数据验证 |
+| **Transformers** | 5.9.0+ | BERT模型加载 |
+| **PyTorch** | 2.8.0+ | 深度学习框架 |
 | **Uvicorn** | 0.30.0+ | ASGI服务器 |
 | **httpx** | - | 异步HTTP客户端 |
 
@@ -628,19 +723,19 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
 
 ### 5.4 完整处理流程示例
 
-**用户输入**: "查询订单77202的状态"
+**用户输入**: "订单77202的物流到哪了"
 
 ```
 1. [parse_input] 
-   → 意图识别: 状态查询/订单查询
+   → 意图识别: 信息查询/物流查询
    → 实体提取: {order_id: "77202"}
    → 缺失槽位: []
 
 2. [plan_task]
-   → 执行计划: ["query_order_status"]
+   → 执行计划: ["query_shipment"]
 
-3. [execute_task] - query_order_status
-   → 结果: {order_id: "77202", status: "COMPLETE", delivery_status: "Advance shipping"}
+3. [execute_task] - query_shipment
+   → 结果: {order_id: 77202, shipping_mode: "Standard Class", status_description: "已于2/3/2018 22:56发货，实际运输3天，无延迟风险。"}
 
 4. [audit]
    → 审计通过: True
@@ -648,8 +743,8 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
    → 警告: []
 
 5. [generate_report]
-   → 响应: "订单77202状态为COMPLETE，配送状态为Advance shipping"
-   → 工具使用: ["query_order_status"]
+   → 响应: "订单 77202 物流状态: 已于2/3/2018 22:56发货，实际运输3天，无延迟风险。"
+   → 工具使用: ["query_shipment"]
 ```
 
 ---
@@ -884,53 +979,94 @@ class KnowledgeRetriever:
 
 ## 7. MCP工具系统
 
-### 7.1 工具定义
+### 7.1 工具定义（V2.1更新）
 
 **文件位置**: `supply_chain_agent/tools/server.py`
 
-| 工具名称 | 功能 | 参数 | 需确认 |
-|----------|------|------|--------|
-| `query_order_status` | 查询订单详情 | order_id | 否 |
-| `get_logistics_trace` | 查询物流轨迹 | tracking_no | 否 |
-| `search_contract_template` | 检索合同模板 | query, top_k | 否 |
-| `approve_work_order` | 提交审批 | order_id, comment | **是** |
-| `create_work_order` | 创建工单 | work_type, description | 否 |
-| `report_issue` | 上报异常 | issue_type, description | 否 |
-| `check_tool_health` | 健康检查 | tool_name | 否 |
+**信息查询类工具**：
 
-### 7.2 工具实现示例
+| 工具名称 | 功能 | 必需参数 | 可选参数 |
+|----------|------|----------|----------|
+| `query_customer` | 查询客户基本信息 | customer_id | - |
+| `query_customer_orders` | 查询客户订单列表 | customer_id | limit, offset |
+| `query_order` | 查询订单详情 | order_id | - |
+| `query_order_items` | 查询订单明细 | order_id | - |
+| `query_product` | 查询产品信息 | product_card_id | - |
+| `query_shipment` | 查询物流信息 | order_id | - |
+| `query_customer_statistics` | 查询客户统计 | customer_id | - |
+
+**工单管理类工具**：
+
+| 工具名称 | 功能 | 必需参数 | 可选参数 |
+|----------|------|----------|----------|
+| `create_work_order` | 创建工单 | work_type, description | priority, order_id, assigned_to |
+| `approve_work_order` | 审批工单 | work_order_id, action | comment, approver |
+
+**异常上报类工具**：
+
+| 工具名称 | 功能 | 必需参数 | 可选参数 |
+|----------|------|----------|----------|
+| `report_issue` | 上报问题 | issue_type, description | urgency, affected_order, reported_by |
+
+### 7.2 工具有效值定义
 
 ```python
-@self.mcp.tool()
-def query_order_status(order_id: str) -> Dict[str, Any]:
-    """查询采购订单详情"""
-    self._check_health("query_order_status")
-    time.sleep(0.1)  # 模拟API延迟
-    
-    if order_id in ORDER_DATA:
-        return ORDER_DATA[order_id]
-    else:
-        self._record_failure("query_order_status")
-        raise ValueError(f"Order {order_id} not found")
+# 工单类型
+VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
+
+# 优先级
+VALID_PRIORITIES = ["高", "中", "低"]
+
+# 问题类型
+VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
+
+# 紧急程度
+VALID_URGENCIES = ["高", "中", "低"]
+
+# 审批动作
+VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 ```
 
-### 7.3 审批工具的特殊处理
+### 7.3 工具实现示例
 
 ```python
 @self.mcp.tool()
-def approve_work_order(order_id: str, comment: str) -> Dict[str, Any]:
-    """
-    IMPORTANT: 此工具仅生成预填单，必须返回给用户二次确认
-    """
+def query_order(order_id: int) -> Dict[str, Any]:
+    """根据订单ID查询订单头详细信息"""
+    order = get_order_by_id(order_id)
+    if not order:
+        return MCPError(code=404, message=f"订单 {order_id} 不存在").to_dict()
+    
     return {
-        "order_id": order_id,
-        "comment": comment,
-        "requires_confirmation": True,
-        "confirmation_message": f"即将审批工单: {order_id}\n请确认是否提交？"
+        "order_id": order.get("order_id"),
+        "customer_id": order.get("customer_id"),
+        "order_date": order.get("order_date"),
+        "order_status": order.get("order_status"),
+        "delivery_status": order.get("delivery_status"),
+        # ...
     }
 ```
 
-### 7.4 工具客户端熔断机制
+### 7.4 审批工具的特殊处理
+
+```python
+@self.mcp.tool()
+def approve_work_order(work_order_id: str, action: str, comment: str = "", approver: str = "Agent System"):
+    """
+    IMPORTANT: 此工具需要验证工单状态
+    - 仅 '待处理' 或 '待审批' 状态可审批
+    - action: approve/reject/escalate
+    """
+    # 验证action
+    if action not in ["approve", "reject", "escalate"]:
+        return MCPError(code=422, message=f"无效的审批动作").to_dict()
+    
+    # 执行审批
+    updated_work_order = _approve_work_order_db(...)
+    return {"success": True, "work_order": updated_work_order}
+```
+
+### 7.5 工具客户端熔断机制
 
 **文件位置**: `supply_chain_agent/tools/client.py`
 
@@ -949,7 +1085,7 @@ class ToolClient:
         return not breaker.is_open
 ```
 
-### 7.5 降级响应机制
+### 7.6 降级响应机制
 
 当工具不可用时，使用知识库+LLM生成合理提示：
 
@@ -974,7 +1110,7 @@ async def _fallback_response(self, user_input: str, intent_info: Dict, error: st
     }
 ```
 
-### 7.6 数据架构
+### 7.7 数据架构
 
 **数据来源**: `/root/Supply-Chain-Agent/dataset/` 目录
 
@@ -1157,10 +1293,11 @@ const useWebSocket = (url: string) => {
 ### 9.2 性能优化措施
 
 1. **规则优先策略**: 意图识别优先使用规则引擎，降低LLM调用频率
-2. **熔断器保护**: 防止工具故障级联扩散
-3. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
-4. **并发控制**: ExecutorAgent支持并发工具调用
-5. **检查点持久化**: LangGraph状态持久化，支持断点恢复
+2. **BERT NER增强**: 中文实体识别准确率提升
+3. **熔断器保护**: 防止工具故障级联扩散
+4. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
+5. **并发控制**: ExecutorAgent支持并发工具调用
+6. **检查点持久化**: LangGraph状态持久化，支持断点恢复
 
 ---
 
@@ -1255,10 +1392,11 @@ services:
 ### 11.2 性能优化措施
 
 1. **规则优先策略**: 意图识别优先使用规则引擎，降低LLM调用频率
-2. **熔断器保护**: 防止工具故障级联扩散
-3. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
-4. **并发控制**: ExecutorAgent支持并发工具调用
-5. **检查点持久化**: LangGraph状态持久化，支持断点恢复
+2. **BERT NER增强**: 中文实体识别准确率提升
+3. **熔断器保护**: 防止工具故障级联扩散
+4. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
+5. **并发控制**: ExecutorAgent支持并发工具调用
+6. **检查点持久化**: LangGraph状态持久化，支持断点恢复
 
 ### 11.3 资源消耗
 
@@ -1267,6 +1405,7 @@ services:
 | CPU | 2核心 | 4核心 |
 | 内存 | 4GB | 8GB |
 | 存储 | 20GB SSD | 50GB SSD |
+| GPU | 可选 | 推荐用于BERT NER |
 
 ---
 
@@ -1280,7 +1419,7 @@ services:
 
 ### 12.2 技术创新
 
-1. **规则+LLM融合**: 意图识别优先规则引擎，低置信度时调用LLM补充
+1. **规则+LLM+BERT融合**: 意图识别优先规则引擎，BERT增强实体提取，低置信度时调用LLM补充
 2. **熔断器模式**: 工具调用熔断保护，防止故障扩散
 3. **知识库降级**: 工具不可用时，知识库检索+LLM生成友好提示，**不返回假数据**
 4. **审批二次确认**: 危险操作（审批）必须用户二次确认
@@ -1363,13 +1502,14 @@ services:
 | 文件 | 行数 | 描述 |
 |------|------|------|
 | orchestrator.py | ~650 | 总控Agent |
-| parser.py | ~650 | 解析师Agent |
-| executor.py | ~450 | 调度员Agent |
+| parser.py | ~700 | 解析师Agent |
+| executor.py | ~500 | 调度员Agent |
 | auditor.py | ~360 | 审计员Agent |
 | workflow.py | ~730 | LangGraph工作流 |
 | vector_store.py | ~960 | 记忆系统 |
 | app.py | ~1060 | FastAPI应用 |
 | retry_manager.py | ~580 | 重试管理器 |
+| bert_ner.py | ~280 | BERT NER模块 (新增) |
 
 ### B. 依赖清单
 
@@ -1379,6 +1519,8 @@ services:
 - fastapi>=0.110.0
 - chromadb>=0.5.0
 - pydantic>=2.0.0
+- transformers>=5.9.0
+- torch>=2.8.0
 
 **前端依赖**:
 - react@18.2.0

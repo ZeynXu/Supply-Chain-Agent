@@ -3,6 +3,7 @@ Parser Agent (解析师)
 
 Responsible for understanding user intent and extracting relevant information.
 Enhanced with LLM integration for fuzzy input handling.
+Entity extraction powered by BERT NER model.
 Entity mappings loaded from database (dataset/OtherData/EntityMapping.csv).
 """
 
@@ -12,6 +13,14 @@ import json
 from dataclasses import dataclass
 
 from supply_chain_agent.config import settings
+
+# BERT NER 导入
+try:
+    from supply_chain_agent.nlp.bert_ner import get_ner_model, extract_entities as bert_extract_entities
+    BERT_NER_AVAILABLE = True
+except ImportError:
+    BERT_NER_AVAILABLE = False
+    print("⚠️ BERT NER not available, using rule-based entity extraction only")
 
 # LLM相关导入
 try:
@@ -27,8 +36,8 @@ except ImportError:
 @dataclass
 class Intent:
     """Structured intent representation."""
-    level_1: str  # 工单创建、状态查询、审批流转、异常上报
-    level_2: str  # 订单状态、物流状态等
+    level_1: str  # 信息查询、工单管理、异常上报
+    level_2: str  # 订单查询、物流查询、创建工单、审批工单、上报问题等
     entities: List[Dict[str, str]]
     required_slots: List[str]
     confidence: float
@@ -37,35 +46,31 @@ class Intent:
 class ParserAgent:
     """Parser agent for intent recognition and information extraction."""
 
-    # Intent patterns (simplified for demo)
+    # Intent patterns (一级任务分类)
     INTENT_PATTERNS = {
-        "状态查询": {
+        "信息查询": {
             "patterns": [
-                r"查(一下|询)?.*?(订单|状态|货)",
+                r"查(一下|询)?.*?(订单|状态|货|客户|产品|物流)",
                 r"订单.*?(状态|在哪|到哪)",
-                r"物流.*?(查询|跟踪|轨迹)"
+                r"物流.*?(查询|跟踪|轨迹)",
+                r"(客户|产品).*?(信息|查询)",
+                r"统计.*?(数据|信息)"
             ],
-            "entities": ["order_id", "tracking_no", "customer_name"],
+            "entities": ["order_id", "customer_id", "product_card_id"],
             "required_slots": []
         },
-        "工单创建": {
+        "工单管理": {
             "patterns": [
                 r"创建.*?(工单|任务|申请)",
                 r"新建.*?(工单|任务|申请|请求)",
                 r"提交.*?(工单|任务|申请|处理|审批)",
-                r"开.*?(工单|任务)"
-            ],
-            "entities": ["work_type", "priority", "description"],
-            "required_slots": ["work_type", "description"]
-        },
-        "审批流转": {
-            "patterns": [
+                r"开.*?(工单|任务)",
                 r"审批.*?(工单|申请)",
                 r"通过.*?(请求|申请)",
                 r"拒绝.*?(工单|请求)"
             ],
-            "entities": ["work_order_id", "action", "comment"],
-            "required_slots": ["work_order_id", "action"]
+            "entities": ["work_order_id", "work_type", "priority", "description", "action", "comment"],
+            "required_slots": []
         },
         "异常上报": {
             "patterns": [
@@ -81,17 +86,19 @@ class ParserAgent:
 
     # Entity extraction patterns (base patterns)
     ENTITY_PATTERNS = {
-        "order_id": r"(PO|订单)[-_]?\d{4}[-_]?\d{3,}",
+        "order_id": r"(?:订单|order)[^0-9]*(\d{4,})",  # 匹配 "订单77202" 或 "order 77202"
+        "customer_id": r"(?:客户|customer)[^0-9]*(\d+)",  # 匹配 "客户123"
+        "product_card_id": r"(?:产品|product)[^0-9]*(\d+)",  # 匹配 "产品456"
         "tracking_no": r"[A-Z]{2}\d{9,11}[A-Z]?|\d{12,14}",
         "customer_name": r"(客户|公司)[:：]\s*([一-龥A-Za-z]+)",
-        "work_order_id": r"WO[-_]?\d{4}[-_]?\d{3,}",
-        "work_type": r"(质量检验|生产跟踪|入库检验|维护任务|紧急响应)",
-        "issue_type": r"(物流延迟|货物损坏|供应短缺|生产异常|系统故障|其他异常)",
+        "work_order_id": r"WO[-_]?\d{1,4}[-_]?\d{1,4}",  # 匹配 WO-0001 或 WO-2026-001
+        "work_type": r"(质检|审批|异常处理|退款|调拨|质量检验|生产跟踪|入库检验|维护任务|紧急响应|其他)",  # 包含MCP有效类型和常见简称
+        "issue_type": r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他|货物损坏|供应短缺|生产异常|系统故障)",  # 基于MCP有效类型
         "quality_issue": r"质量问题",
         "logistics_issue": r"物流异常",
         "priority": r"(优先级|优先)[:：]?\s*(紧急|高|中|低)",
         "urgency": r"(紧急程度|紧急级别|紧急)[:：]?\s*(紧急|高|中|低)",
-        "amount": r"¥?\s*(\d+(?:\.\d{2})?)",
+        "amount": r"¥\s*(\d+(?:\.\d{2})?)",  # 只匹配带¥符号的金额
         "date": r"\d{4}[-/]\d{1,2}[-/]\d{1,2}",
         "comment": r"(意见|理由|原因|说明|备注)[:：]?\s*([一-龥A-Za-z0-9，。！？、]+)",
     }
@@ -102,18 +109,30 @@ class ParserAgent:
         "reject": r"(拒绝|驳回|不同意|审批拒绝)",
     }
 
-    def __init__(self, llm_client: Optional['LLMClient'] = None):
+    def __init__(self, llm_client: Optional['LLMClient'] = None, use_bert_ner: bool = False):
         """
-        Initialize ParserAgent with optional LLM client.
+        Initialize ParserAgent with optional LLM client and BERT NER.
 
         Args:
             llm_client: LLM客户端实例（可选，默认从配置创建）
+            use_bert_ner: 是否使用BERT NER进行实体识别（默认False，使用规则）
         """
         self.intent_cache = {}
 
         # LLM客户端
         self._llm_client = llm_client
         self.llm_enabled = LLM_AVAILABLE and settings.intent_rule_first
+
+        # BERT NER
+        self.use_bert_ner = use_bert_ner and BERT_NER_AVAILABLE
+        self._bert_ner = None
+        if self.use_bert_ner:
+            try:
+                self._bert_ner = get_ner_model(use_bert=True)
+                print("✅ BERT NER已启用")
+            except Exception as e:
+                print(f"⚠️ BERT NER初始化失败: {e}, 将使用规则提取")
+                self.use_bert_ner = False
 
         # Load entity mappings from database
         self._entity_mappings = None
@@ -243,7 +262,7 @@ class ParserAgent:
             "intent_level_2": intent_level_2,
             "entities": entities,
             "required_slots": required_slots,
-            "missing_slots": [slot for slot in required_slots if slot not in entities],
+            "missing_slots": [slot for slot in required_slots if slot not in {e["type"] for e in entities}],
             "confidence": confidence,
             "raw_text": cleaned_text,
             "used_llm": used_llm,
@@ -265,55 +284,45 @@ class ParserAgent:
                 if re.search(pattern, text_lower):
                     return intent_name
 
-        # Default to 状态查询 if contains query-like words
-        query_keywords = ["查", "问", "看", "找", "状态", "进度"]
+        # Default to 信息查询 if contains query-like words
+        query_keywords = ["查", "问", "看", "找", "状态", "进度", "信息"]
         if any(keyword in text_lower for keyword in query_keywords):
-            return "状态查询"
+            return "信息查询"
 
         # Default
-        return "状态查询"
+        return "信息查询"
 
     def _detect_intent_level_2(self, text: str, level_1_intent: str) -> str:
-        """Detect second level intent."""
+        """Detect second level intent based on MCP tools."""
         text_lower = text.lower()
 
-        if level_1_intent == "状态查询":
-            if "物流" in text_lower or "快递" in text_lower or "运" in text_lower:
+        if level_1_intent == "信息查询":
+            # 基于MCP工具的二级分类
+            if "客户" in text_lower and ("订单" in text_lower or "统计" in text_lower):
+                return "客户订单查询"
+            elif "客户" in text_lower and "统计" in text_lower:
+                return "客户统计查询"
+            elif "客户" in text_lower:
+                return "客户查询"
+            elif "物流" in text_lower or "快递" in text_lower or "运" in text_lower:
                 return "物流查询"
+            elif "订单" in text_lower and "明细" in text_lower:
+                return "订单明细查询"
             elif "订单" in text_lower or "采购" in text_lower:
-                return "订单状态查询"
-            elif "合同" in text_lower or "协议" in text_lower:
-                return "合同查询"
+                return "订单查询"
+            elif "产品" in text_lower:
+                return "产品查询"
             else:
-                return "通用查询"
+                return "订单查询"  # 默认
 
-        elif level_1_intent == "工单创建":
-            if "质量" in text_lower or "检验" in text_lower:
-                return "质量检验工单"
-            elif "生产" in text_lower or "制造" in text_lower:
-                return "生产跟踪工单"
-            elif "物流" in text_lower or "运输" in text_lower:
-                return "物流异常工单"
+        elif level_1_intent == "工单管理":
+            if "审批" in text_lower or "通过" in text_lower or "拒绝" in text_lower:
+                return "审批工单"
             else:
-                return "通用工单"
-
-        elif level_1_intent == "审批流转":
-            if "通过" in text_lower or "批准" in text_lower:
-                return "审批通过"
-            elif "拒绝" in text_lower or "驳回" in text_lower:
-                return "审批拒绝"
-            else:
-                return "审批处理"
+                return "创建工单"
 
         elif level_1_intent == "异常上报":
-            if "质量" in text_lower:
-                return "质量异常"
-            elif "物流" in text_lower:
-                return "物流异常"
-            elif "生产" in text_lower:
-                return "生产异常"
-            else:
-                return "通用异常"
+            return "上报问题"
 
         return "未知"
 
@@ -322,37 +331,55 @@ class ParserAgent:
         """Refine intent level 2 based on extracted entities."""
         text_lower = text.lower()
 
-        # For status queries, refine based on entity types
-        if level_1_intent == "状态查询":
+        # For 信息查询, refine based on entity types
+        if level_1_intent == "信息查询":
             entity_types = {e["type"] for e in entities}
 
-            # If we have order_id, it's an order status query
+            # If we have order_id, determine specific query type
             if "order_id" in entity_types:
-                # But if also have tracking_no, it's a logistics query
-                if "tracking_no" in entity_types or "物流" in text_lower or "运" in text_lower:
+                if "明细" in text_lower:
+                    return "订单明细查询"
+                elif "物流" in text_lower or "运" in text_lower:
                     return "物流查询"
-                return "订单状态查询"
+                return "订单查询"
 
-            # If we have tracking_no only, it's a logistics query
-            if "tracking_no" in entity_types:
-                return "物流查询"
+            # If we have customer_id
+            if "customer_id" in entity_types:
+                if "订单" in text_lower:
+                    return "客户订单查询"
+                elif "统计" in text_lower:
+                    return "客户统计查询"
+                return "客户查询"
 
-            # If we have customer_name, it might be a contract query
-            if "customer_name" in entity_types or "合同" in text_lower:
-                return "合同查询"
+            # If we have product_card_id
+            if "product_card_id" in entity_types:
+                return "产品查询"
+
+        # For 工单管理
+        elif level_1_intent == "工单管理":
+            # If has action entity, it's an approval
+            entity_types = {e["type"] for e in entities}
+            if "action" in entity_types or "审批" in text_lower:
+                return "审批工单"
+            return "创建工单"
 
         return level_2_intent
 
     def _extract_entities(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
-        """Extract entities from text."""
+        """Extract entities from text using rules and optional BERT NER."""
         entities = []
         extracted_values = set()  # 防止重复提取
 
-        # Extract using patterns
+        # Step 1: 规则提取 (始终执行，作为基础)
         for entity_type, pattern in self.ENTITY_PATTERNS.items():
             matches = re.finditer(pattern, text, re.IGNORECASE)
             for match in matches:
-                value = match.group()
+                # 对于有捕获组的模式，使用捕获组；否则使用整个匹配
+                if match.lastindex and match.lastindex >= 1:
+                    value = match.group(1)  # 使用第一个捕获组
+                else:
+                    value = match.group()
+
                 # 避免重复提取
                 if value in extracted_values:
                     continue
@@ -362,12 +389,25 @@ class ParserAgent:
                     "type": entity_type,
                     "value": value,
                     "start": match.start(),
-                    "end": match.end()
+                    "end": match.end(),
+                    "confidence": 0.95  # 规则提取置信度较高
                 })
 
+        # Step 2: BERT NER提取 (如果启用)
+        if self.use_bert_ner and self._bert_ner:
+            try:
+                bert_entities = self._bert_ner.extract_for_intent(text, intent_level_1)
+                # 合并BERT结果，只添加规则未覆盖的
+                for entity in bert_entities:
+                    if entity["value"] not in extracted_values:
+                        extracted_values.add(entity["value"])
+                        entities.append(entity)
+            except Exception as e:
+                print(f"⚠️ BERT NER提取失败: {e}")
+
         # Special handling for approval intent - extract action and inline comment
-        if intent_level_1 == "审批流转":
-            # Check for action (approve/reject)
+        if intent_level_1 == "工单管理":
+            # Check for action (approve/reject) for approval workflow
             for action_type, pattern in self.ACTION_PATTERNS.items():
                 if re.search(pattern, text):
                     # Check if we already have action entity
@@ -403,9 +443,8 @@ class ParserAgent:
                     break
 
         # Special handling for work order creation - extract inline description
-        if intent_level_1 == "工单创建":
+        if intent_level_1 == "工单管理":
             # Pattern: 创建XXX工单，YYY -> description = "YYY"
-            # Also: 订单XXX需要检验，检查到货质量
             desc_patterns = [
                 r"(?:工单|任务)[，,]?\s*([一-龥A-Za-z0-9，。！？、]+)$",
                 r"(?:需要|要求)[，,]?\s*([一-龥A-Za-z0-9，。！？、]+)[，,]?\s*([一-龥A-Za-z0-9，。！？、]+)$",
@@ -463,14 +502,14 @@ class ParserAgent:
 
             # Map quality_issue to appropriate type based on intent
             if entity_type == "quality_issue":
-                if intent_level_1 == "工单创建":
+                if intent_level_1 == "工单管理":
                     entity["type"] = "work_type"
                 elif intent_level_1 == "异常上报":
                     entity["type"] = "issue_type"
 
             # Map logistics_issue to appropriate type based on intent
             elif entity_type == "logistics_issue":
-                if intent_level_1 == "工单创建":
+                if intent_level_1 == "工单管理":
                     entity["type"] = "work_type"
                 elif intent_level_1 == "异常上报":
                     entity["type"] = "issue_type"
@@ -484,7 +523,7 @@ class ParserAgent:
                     entity["type"] = "urgency"
                 else:
                     # Default mapping based on intent
-                    if intent_level_1 == "工单创建":
+                    if intent_level_1 == "工单管理":
                         entity["type"] = "priority"
                     elif intent_level_1 == "异常上报":
                         entity["type"] = "urgency"
@@ -502,25 +541,30 @@ class ParserAgent:
             base_slots = self.INTENT_PATTERNS[intent_level_1]["required_slots"]
             required_slots.extend(base_slots)
 
-        # Add intent-specific slots
-        if intent_level_1 == "状态查询" and intent_level_2 == "物流查询":
-            required_slots.append("tracking_no")
-        elif intent_level_1 == "状态查询" and intent_level_2 == "订单状态查询":
+        # 二级任务对应的必填参数（基于MCP工具参数定义）
+        if intent_level_2 == "客户查询":
+            required_slots.append("customer_id")
+        elif intent_level_2 == "客户订单查询":
+            required_slots.append("customer_id")
+        elif intent_level_2 == "客户统计查询":
+            required_slots.append("customer_id")
+        elif intent_level_2 == "订单查询":
             required_slots.append("order_id")
-        elif intent_level_1 == "审批流转":
-            required_slots.append("work_order_id")
-            # comment is optional - we can use a default if not provided
-            # required_slots.append("comment")
-        elif intent_level_1 == "工单创建":
+        elif intent_level_2 == "订单明细查询":
+            required_slots.append("order_id")
+        elif intent_level_2 == "物流查询":
+            required_slots.append("order_id")
+        elif intent_level_2 == "产品查询":
+            required_slots.append("product_card_id")
+        elif intent_level_2 == "创建工单":
             required_slots.append("work_type")
             required_slots.append("description")
-            if intent_level_2 == "质量检验工单":
-                required_slots.append("order_id")  # 质量检验通常关联订单
-        elif intent_level_1 == "异常上报":
+        elif intent_level_2 == "审批工单":
+            required_slots.append("work_order_id")
+            required_slots.append("action")
+        elif intent_level_2 == "上报问题":
             required_slots.append("issue_type")
             required_slots.append("description")
-            if intent_level_2 in ["物流异常", "质量异常"]:
-                required_slots.append("order_id")  # 物流/质量异常通常关联订单
 
         return list(set(required_slots))  # Remove duplicates
 
@@ -656,22 +700,31 @@ class ParserAgent:
         # Check entity consistency
         entities = intent.get("entities", [])
         intent_level_1 = intent.get("intent_level_1", "")
+        intent_level_2 = intent.get("intent_level_2", "")
 
         # Validate entities based on intent
-        if intent_level_1 == "状态查询":
-            order_entities = [e for e in entities if e["type"] in ["order_id", "tracking_no"]]
-            if not order_entities:
-                issues.append("状态查询需要订单号或运单号")
-        elif intent_level_1 == "工单创建":
-            if intent_level_2 == "质量检验工单":
-                order_entities = [e for e in entities if e["type"] == "order_id"]
-                if not order_entities:
-                    issues.append("质量检验工单需要关联订单号")
-        elif intent_level_1 == "异常上报":
-            if intent_level_2 in ["物流异常", "质量异常"]:
-                order_entities = [e for e in entities if e["type"] == "order_id"]
-                if not order_entities:
-                    issues.append(f"{intent_level_2}需要关联订单号")
+        if intent_level_1 == "信息查询":
+            query_entities = [e for e in entities if e["type"] in ["order_id", "customer_id", "product_card_id"]]
+            if not query_entities:
+                issues.append("信息查询需要提供订单号、客户ID或产品ID")
+        elif intent_level_2 == "审批工单":
+            work_order_entities = [e for e in entities if e["type"] == "work_order_id"]
+            if not work_order_entities:
+                issues.append("审批工单需要提供工单号")
+        elif intent_level_2 == "创建工单":
+            work_type_entities = [e for e in entities if e["type"] == "work_type"]
+            desc_entities = [e for e in entities if e["type"] == "description"]
+            if not work_type_entities:
+                issues.append("创建工单需要指定工单类型")
+            if not desc_entities:
+                issues.append("创建工单需要提供描述")
+        elif intent_level_2 == "上报问题":
+            issue_type_entities = [e for e in entities if e["type"] == "issue_type"]
+            desc_entities = [e for e in entities if e["type"] == "description"]
+            if not issue_type_entities:
+                issues.append("上报问题需要指定问题类型")
+            if not desc_entities:
+                issues.append("上报问题需要提供描述")
 
         return {
             "valid": len(issues) == 0,
@@ -685,13 +738,15 @@ class ParserAgent:
         prompts = []
 
         slot_prompts = {
-            "order_id": "请问您要查询哪个订单？请输入订单号（例如：PO-2026-001）",
-            "tracking_no": "请问您要查询哪个运单？请输入运单号",
+            "order_id": "请问您要查询哪个订单？请输入订单号（数字ID）",
+            "customer_id": "请问您要查询哪个客户？请输入客户ID（数字ID）",
+            "product_card_id": "请问您要查询哪个产品？请输入产品卡片ID（数字ID）",
             "work_order_id": "请问您要审批哪个工单？请输入工单号",
+            "action": "请问审批动作是什么？（approve/reject/escalate）",
             "comment": "请输入审批意见",
-            "work_type": "请问要创建什么类型的工单？",
-            "description": "请描述工单的具体内容",
-            "issue_type": "请问是什么类型的问题？",
+            "work_type": "请问要创建什么类型的工单？（审批/异常处理/退款/调拨/质检/其他）",
+            "description": "请描述具体内容",
+            "issue_type": "请问是什么类型的问题？（物流延迟/库存异常/质量缺陷/数据错误/客户投诉/其他）",
             "urgency": "请问紧急程度如何？（高/中/低）"
         }
 
@@ -718,8 +773,10 @@ class ParserAgent:
 
         slot_descriptions = {
             "order_id": "订单号",
-            "tracking_no": "运单号",
+            "customer_id": "客户ID",
+            "product_card_id": "产品卡片ID",
             "work_order_id": "工单号",
+            "action": "审批动作",
             "comment": "审批意见",
             "work_type": "工单类型",
             "description": "描述",

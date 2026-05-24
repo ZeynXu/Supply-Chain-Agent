@@ -47,18 +47,48 @@ _metrics = {
     "successful_requests": 0,
     "failed_requests": 0,
     "response_times": [],
-    "intents": {"状态查询": 0, "工单创建": 0, "异常上报": 0, "审批流转": 0},
+    "intents": {"信息查询": 0, "工单管理": 0, "异常上报": 0},
     "tool_calls": {}
 }
 
 # 工具定义
 _TOOLS = [
+    # 信息查询类
     {
-        "name": "query_order_status",
-        "description": "查询采购订单详情",
+        "name": "query_customer",
+        "description": "根据客户ID查询客户基本信息",
+        "parameters": {
+            "customer_id": {
+                "type": "integer",
+                "required": True,
+                "description": "客户ID"
+            }
+        },
+        "status": "available"
+    },
+    {
+        "name": "query_customer_orders",
+        "description": "查询某客户的订单列表（分页）",
+        "parameters": {
+            "customer_id": {
+                "type": "integer",
+                "required": True,
+                "description": "客户ID"
+            },
+            "limit": {
+                "type": "integer",
+                "required": False,
+                "description": "返回数量限制"
+            }
+        },
+        "status": "available"
+    },
+    {
+        "name": "query_order",
+        "description": "根据订单ID查询订单详细信息",
         "parameters": {
             "order_id": {
-                "type": "string",
+                "type": "integer",
                 "required": True,
                 "description": "订单ID"
             }
@@ -66,82 +96,118 @@ _TOOLS = [
         "status": "available"
     },
     {
-        "name": "get_logistics_trace",
-        "description": "查询物流轨迹",
+        "name": "query_order_items",
+        "description": "查询订单明细行",
         "parameters": {
-            "tracking_no": {
-                "type": "string",
+            "order_id": {
+                "type": "integer",
                 "required": True,
-                "description": "物流跟踪号"
+                "description": "订单ID"
             }
         },
         "status": "available"
     },
     {
-        "name": "search_contract_template",
-        "description": "检索合同条款",
+        "name": "query_product",
+        "description": "根据产品卡片ID查询产品信息",
         "parameters": {
-            "query": {
+            "product_card_id": {
+                "type": "integer",
+                "required": True,
+                "description": "产品卡片ID"
+            }
+        },
+        "status": "available"
+    },
+    {
+        "name": "query_shipment",
+        "description": "查询订单的物流信息及状态描述",
+        "parameters": {
+            "order_id": {
+                "type": "integer",
+                "required": True,
+                "description": "订单ID"
+            }
+        },
+        "status": "available"
+    },
+    {
+        "name": "query_customer_statistics",
+        "description": "获取客户的风险评估统计指标",
+        "parameters": {
+            "customer_id": {
+                "type": "integer",
+                "required": True,
+                "description": "客户ID"
+            }
+        },
+        "status": "available"
+    },
+    # 工单管理类
+    {
+        "name": "create_work_order",
+        "description": "创建新工单",
+        "parameters": {
+            "work_type": {
                 "type": "string",
                 "required": True,
-                "description": "搜索关键词"
+                "description": "工单类型(审批/异常处理/退款/调拨/质检/其他)"
             },
-            "top_k": {
-                "type": "number",
+            "description": {
+                "type": "string",
+                "required": True,
+                "description": "工单描述"
+            },
+            "priority": {
+                "type": "string",
                 "required": False,
-                "description": "返回数量"
+                "description": "优先级(高/中/低)"
             }
         },
         "status": "available"
     },
     {
         "name": "approve_work_order",
-        "description": "提交工单审批",
+        "description": "审批工单",
         "parameters": {
             "work_order_id": {
                 "type": "string",
                 "required": True,
                 "description": "工单ID"
             },
-            "comment": {
+            "action": {
                 "type": "string",
                 "required": True,
+                "description": "审批动作(approve/reject/escalate)"
+            },
+            "comment": {
+                "type": "string",
+                "required": False,
                 "description": "审批意见"
             }
         },
         "status": "available",
         "requires_confirmation": True
     },
-    {
-        "name": "create_work_order",
-        "description": "创建工单",
-        "parameters": {
-            "work_type": {
-                "type": "string",
-                "required": True,
-                "description": "工单类型"
-            },
-            "description": {
-                "type": "string",
-                "required": True,
-                "description": "工单描述"
-            }
-        },
-        "status": "available"
-    },
+    # 异常上报类
     {
         "name": "report_issue",
-        "description": "上报异常",
+        "description": "上报问题/异常",
         "parameters": {
             "issue_type": {
                 "type": "string",
                 "required": True,
-                "description": "异常类型"
+                "description": "问题类型(物流延迟/库存异常/质量缺陷/数据错误/客户投诉/其他)"
             },
             "description": {
                 "type": "string",
                 "required": True,
-                "description": "异常描述"
+                "description": "问题描述"
+            },
+            "urgency": {
+                "type": "string",
+                "required": False,
+                "description": "紧急程度(高/中/低)"
             }
         },
         "status": "available"
