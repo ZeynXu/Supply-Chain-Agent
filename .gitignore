@@ -9,6 +9,11 @@ __pycache__/
 *$py.class
 *.so
 .Python
+
+# BERT models (too large for GitHub, >100MB)
+supply_chain_agent/models/
+*.bin
+*.safetensors
 build/
 develop-eggs/
 dist/
