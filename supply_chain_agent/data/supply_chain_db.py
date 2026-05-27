@@ -1272,16 +1272,67 @@ def get_fallback_template(error_code: str) -> Optional[Dict[str, Any]]:
 
 
 def render_fallback_template(error_code: str, **kwargs) -> str:
-    """Render a fallback template with provided variables."""
+    """
+    Render a fallback template with provided variables.
+
+    对于未提供的占位符，会智能处理：
+    - 如果占位符是用户输入实体但未提供，使用默认文本代替
+    - 如果占位符是系统参数但未提供，使用合理的默认值
+
+    Args:
+        error_code: 错误编码
+        **kwargs: 模板变量
+
+    Returns:
+        渲染后的响应文本
+    """
     template = get_fallback_template(error_code)
     if not template:
         return f"系统错误: {error_code}"
 
     text = template.get('template', '')
 
-    # Replace placeholders like {order_id}
+    # 定义占位符的默认替换文本（用于未提供时）
+    default_replacements = {
+        # 用户输入实体
+        "order_id": "该订单",
+        "customer_id": "该客户",
+        "product_card_id": "该产品",
+        "tracking_no": "该运单",
+        "customer_name": "该客商",
+        "query_target": "目标",
+        "missing_slots": "相关信息",
+        # 系统参数/业务数据
+        "order_status": "当前状态",
+        "delivery_status": "当前发货状态",
+        "shipping_mode": "计划运输方式",
+        "days_for_shipment_scheduled": "预计天数",
+        "service_name": "相关服务",
+        "recovery_time": "一段时间",
+        "max_retries": "多次",
+        "trace_id": "系统生成",
+        "limit": "额度限制",
+        "occupied": "已占用额度",
+        "escalated_approver": "上级审批人",
+    }
+
+    # 先用提供的参数替换
     for key, value in kwargs.items():
-        text = text.replace(f'{{{key}}}', str(value))
+        if value is not None:
+            text = text.replace(f'{{{key}}}', str(value))
+
+    # 处理剩余的占位符
+    import re
+    remaining_placeholders = re.findall(r'\{(\w+)\}', text)
+
+    for placeholder in remaining_placeholders:
+        if placeholder in default_replacements:
+            # 使用默认替换
+            default_text = default_replacements[placeholder]
+            text = text.replace(f'{{{placeholder}}}', default_text)
+        else:
+            # 未知的占位符，直接去掉
+            text = text.replace(f'{{{placeholder}}}', "")
 
     return text
 

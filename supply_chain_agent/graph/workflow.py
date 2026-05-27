@@ -284,48 +284,82 @@ class SupplyChainWorkflow:
             try:
                 # Check if there were any tool errors
                 tool_results = state.get("tool_results", {})
-                error_messages = []
+                extracted_slots = state.get("extracted_slots", {})
+                error_responses = []
+
                 for tool_name, result in tool_results.items():
                     if isinstance(result, dict):
                         if result.get("error") or result.get("success") == False:
-                            # Extract user-friendly error message
+                            # Extract error detail
                             error_detail = result.get("error", "未知错误")
-                            # Handle dict type error
                             if isinstance(error_detail, dict):
                                 error_detail = error_detail.get("message", str(error_detail))
-                            # Clean up error message
-                            if "Order" in error_detail and "not found" in error_detail:
-                                # Extract order ID from error
-                                import re
-                                match = re.search(r'Order (\S+) not found', error_detail)
-                                if match:
-                                    order_id = match.group(1)
-                                    error_messages.append(f"订单 **{order_id}** 不存在，请检查订单号是否正确")
-                                else:
-                                    error_messages.append("查询的订单不存在，请检查订单号是否正确")
-                            elif "Tracking" in error_detail or "tracking" in error_detail.lower():
-                                error_messages.append("查询的运单不存在，请检查运单号是否正确")
-                            else:
-                                error_messages.append(f"**{tool_name}**: {error_detail}")
 
-                # If there were errors, generate error response
-                if error_messages:
-                    error_response = "⚠️ **查询结果**\n\n"
-                    error_response += "\n".join(f"- {msg}" for msg in error_messages)
-                    error_response += "\n\n**建议**：\n"
-                    error_response += "1. 检查输入的订单号/运单号是否正确\n"
-                    error_response += "2. 确认订单是否已创建\n"
-                    error_response += "3. 如有疑问，请联系客服人员"
+                            # 确定错误编码
+                            error_code = report_generator.determine_error_code_from_result(
+                                tool_name, error_detail
+                            )
+
+                            # 提取模板参数（传入 extracted_slots 和 tool_results）
+                            template_params = report_generator.extract_template_params(
+                                tool_name=tool_name,
+                                error_detail=error_detail,
+                                extracted_slots=extracted_slots,
+                                tool_results=tool_results,
+                                missing_slots=state.get("missing_slots", [])
+                            )
+
+                            # 调用 report_generator 的降级响应方法
+                            fallback_response = await report_generator.generate_fallback_response(
+                                error_code,
+                                tool_results=tool_results,
+                                **template_params
+                            )
+
+                            error_responses.append({
+                                "tool_name": tool_name,
+                                "error_code": error_code,
+                                "message": fallback_response.get("message", ""),
+                                "severity": fallback_response.get("severity", "warning")
+                            })
+
+                # If there were errors, generate error response using fallback templates
+                if error_responses:
+                    # 合并所有错误响应
+                    error_messages = [resp["message"] for resp in error_responses]
+                    error_codes = [resp["error_code"] for resp in error_responses]
+
+                    # 使用第一个错误的编码作为主要错误编码
+                    primary_error_code = error_codes[0] if error_codes else "WORKFLOW_EXECUTION_FAILED"
+
+                    # 如果有多个错误，拼接消息
+                    if len(error_messages) == 1:
+                        error_response = error_messages[0]
+                    else:
+                        error_response = "⚠️ **查询结果**\n\n"
+                        error_response += "\n\n---\n\n".join(error_messages)
 
                     return {
-                        "final_report": {"summary": error_response, "errors": error_messages},
-                        "response_card": {"summary": error_response},
+                        "final_report": {
+                            "summary": error_response,
+                            "errors": error_responses,
+                            "error_codes": error_codes
+                        },
+                        "response_card": {
+                            "summary": error_response,
+                            "error_code": primary_error_code
+                        },
                         "messages": state.get("messages", []) + [{
                             "role": "assistant",
                             "content": error_response
                         }],
                         "context_window": state.get("context_window", []) + [
-                            {"agent": "generate_report", "action": "generated_error_report", "errors": error_messages}
+                            {
+                                "agent": "generate_report",
+                                "action": "generated_error_report",
+                                "errors": error_responses,
+                                "error_codes": error_codes
+                            }
                         ]
                     }
 
@@ -350,13 +384,23 @@ class SupplyChainWorkflow:
                 }
 
             except Exception as e:
+                # 发生异常时，使用 WORKFLOW_EXECUTION_FAILED 错误编码
+                error_code = "WORKFLOW_EXECUTION_FAILED"
+
+                # 调用 report_generator 的降级响应方法
+                fallback_response = await report_generator.generate_fallback_response(
+                    error_code,
+                    trace_id=str(hash(str(e)))
+                )
+
                 return {
                     "messages": state.get("messages", []) + [{
                         "role": "assistant",
-                        "content": f"抱歉，系统在处理您的请求时遇到问题：{str(e)}\n\n建议联系客服进行人工处理。"
+                        "content": fallback_response.get("message", f"抱歉，系统在处理您的请求时遇到问题：{str(e)}")
                     }],
                     "error_count": state.get("error_count", 0) + 1,
                     "last_error": f"Report generation error: {e}",
+                    "error_code": error_code,
                 }
 
         # Node 8: Error Handler

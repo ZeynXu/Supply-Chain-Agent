@@ -7,17 +7,25 @@
 
 
 基于LangGraph框架构建的智能供应链工单处理Agent系统。本项目将多智能体协作技术应用于供应链运营场景，通过四Agent星型拓扑架构协同工作，为企业提供智能化的工单处理能力。
-> **技术栈**：Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
+> 技术栈：Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
 
 An intelligent agent system for supply chain work order processing built on the LangGraph framework. This project applies multi-agent collaboration technology to supply chain operations, enabling four agents to work together in a star topology architecture, delivering intelligent work order processing capabilities for enterprises.
-> **Tech Stack**: Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
+> Tech Stack: Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
 
 ---
-> **更新记录**[持续更新中]
+> **更新记录** [持续更新中]
+>
 > 2026-05-13: 初始版本发布
+>
 > 2026-05-23: 重构数据架构，真实数据库交互替代Mock数据响应
+>
 > 2026-05-23: 更新MCP工具
+>
 > 2026-05-24: 优化Executor Agent执行调用工具；优化意图识别实体提取
+>
+> 2026-05-28: 重构意图识别分层体系；优化响应卡片
+>
+
 ---
 
 > 🎯 **项目定位**: L3级自主Agent系统，为供应链运营团队提供协作副驾驶能力
@@ -170,7 +178,7 @@ Supply-Chain-Agent/
 
 ### 🎯 核心功能
 
-- **🔍 智能意图识别**: 三级意图分类体系（信息查询/工单管理/异常上报），支持模糊输入处理
+- **🔍 三层意图识别**: 规则引擎(意图匹配) → BERT NER(实体提取) → LLM(兜底补充)，职责分离清晰
 - **📝 BERT实体识别**: 集成bert-base-chinese-wwm模型，准确提取订单号、客户ID、工单号等实体
 - **🔄 跨系统查询**: MCP工具调用，支持订单、物流、客户、产品查询
 - **📋 工单管理**: 创建质量检验、审批等工单，支持工单审批流转
@@ -468,10 +476,11 @@ graph TD
    - 短期+工作+长期记忆，支持RAG检索
    - SOP知识库增强，提升决策质量
 
-4. **📝 BERT中文实体识别**
-   - 基于bert-base-chinese-wwm的实体识别模块
-   - 规则+BERT混合提取，准确率更高
-   - 支持订单号、客户ID、工单号等多种实体类型
+4. **📝 三层意图识别架构**
+   - 第一层：规则引擎专注意图模式匹配（一级+二级）+ 置信度计算
+   - 第二层：BERT NER专注实体提取
+   - 第三层：LLM兜底（意图分类+实体提取）
+   - 职责分离清晰，降低LLM调用成本
 
 5. **🛡️ 熔断器模式**
    - 工具调用熔断保护，防止故障扩散
@@ -479,9 +488,10 @@ graph TD
 
 ### 🚀 工程实践
 
-1. **⚡ 规则+BERT融合**
-   - 实体识别优先规则引擎，BERT语义补充
-   - 双重保障，提取准确率更高
+1. **⚡ 三层意图识别**
+   - 规则引擎优先：意图模式匹配 + 置信度计算
+   - BERT NER补充：实体提取（第二层）
+   - LLM兜底：规则未命中/置信度低/实体为空时触发
 
 2. **📉 知识库降级**
    - 工具不可用时，知识库检索+LLM生成友好提示

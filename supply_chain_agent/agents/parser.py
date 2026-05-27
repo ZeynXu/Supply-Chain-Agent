@@ -91,7 +91,7 @@ class ParserAgent:
         "product_card_id": r"(?:产品|product)[^0-9]*(\d+)",  # 匹配 "产品456"
         "tracking_no": r"[A-Z]{2}\d{9,11}[A-Z]?|\d{12,14}",
         "customer_name": r"(客户|公司)[:：]\s*([一-龥A-Za-z]+)",
-        "work_order_id": r"WO[-_]?\d{1,4}[-_]?\d{1,4}",  # 匹配 WO-0001 或 WO-2026-001
+        "work_order_id": r"WO[-_]?\d+(?:[-_]\d+)?",  # 匹配 WO-0001, WO-2026-001, WO-20260526-001
         "work_type": r"(质检|审批|异常处理|退款|调拨|质量检验|生产跟踪|入库检验|维护任务|紧急响应|其他)",  # 包含MCP有效类型和常见简称
         "issue_type": r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他|货物损坏|供应短缺|生产异常|系统故障)",  # 基于MCP有效类型
         "quality_issue": r"质量问题",
@@ -123,16 +123,25 @@ class ParserAgent:
         self._llm_client = llm_client
         self.llm_enabled = LLM_AVAILABLE and settings.intent_rule_first
 
-        # BERT NER
+        # BERT NER - 初始化时检查可用性
         self.use_bert_ner = use_bert_ner and BERT_NER_AVAILABLE
         self._bert_ner = None
+        self._bert_ner_available = False  # 新增：跟踪BERT NER是否真正可用
+
         if self.use_bert_ner:
             try:
                 self._bert_ner = get_ner_model(use_bert=True)
-                print("✅ BERT NER已启用")
+                # 验证模型是否真正加载成功
+                if self._bert_ner and self._bert_ner.model is not None:
+                    self._bert_ner_available = True
+                    print("✅ BERT NER已启用并可用")
+                else:
+                    print("⚠️ BERT NER模型未正确加载，将跳过第二层，直接使用LLM")
+                    self.use_bert_ner = False
             except Exception as e:
-                print(f"⚠️ BERT NER初始化失败: {e}, 将使用规则提取")
+                print(f"⚠️ BERT NER初始化失败: {e}，将跳过第二层，直接使用LLM")
                 self.use_bert_ner = False
+                self._bert_ner_available = False
 
         # Load entity mappings from database
         self._entity_mappings = None
@@ -199,7 +208,11 @@ class ParserAgent:
 
     async def parse_intent(self, text: str) -> Dict[str, Any]:
         """
-        Parse user intent from text.
+        Parse user intent from text with 3-layer architecture.
+
+        第一层：规则引擎 - 意图模式匹配（一级+二级）+ 置信度计算
+        第二层：BERT NER - 实体提取
+        第三层：LLM - 意图分类 + 实体提取（规则未命中/置信度低/实体为空时触发）
 
         Args:
             text: User input text
@@ -214,31 +227,28 @@ class ParserAgent:
         if cleaned_text in self.intent_cache:
             return self.intent_cache[cleaned_text]
 
-        # Detect intent level 1
+        # ========== 第一层：规则引擎 - 意图模式匹配 ==========
         intent_level_1 = self._detect_intent_level_1(cleaned_text)
-
-        # Detect intent level 2 (initial)
         intent_level_2 = self._detect_intent_level_2(cleaned_text, intent_level_1)
+        confidence = self._calculate_confidence(cleaned_text, intent_level_1, intent_level_2)
 
-        # Extract entities
-        entities = self._extract_entities(cleaned_text, intent_level_1)
-
-        # Refine intent level 2 based on extracted entities
-        intent_level_2 = self._refine_intent_level_2(cleaned_text, intent_level_1, intent_level_2, entities)
-
-        # Determine required slots
-        required_slots = self._get_required_slots(intent_level_1, intent_level_2, entities)
-
-        # Calculate confidence
-        confidence = self._calculate_confidence(cleaned_text, intent_level_1, entities)
-
-        # 判断是否需要LLM补充
-        needs_llm = self._needs_llm_intent(cleaned_text, confidence, entities)
+        # 判断是否需要LLM（第一层判断）
+        needs_llm = self._needs_llm_intent(cleaned_text, intent_level_1, intent_level_2, confidence)
         used_llm = False
+        entities = []
 
+        # ========== 第二层：BERT NER - 实体提取 ==========
+        # 只有当不需要LLM时才执行第二层
+        if not needs_llm and self._bert_ner_available:
+            entities = self._extract_entities_with_ner(cleaned_text, intent_level_1)
+            # 如果BERT NER未提取到实体，可能需要LLM
+            if not entities:
+                needs_llm = True
+
+        # ========== 第三层：LLM（如果需要）==========
         if needs_llm and self.llm_client:
             try:
-                # 第二步：LLM意图识别
+                # LLM意图识别
                 llm_result = await self._llm_classify_intent(cleaned_text)
 
                 # 融合LLM结果
@@ -248,13 +258,16 @@ class ParserAgent:
                     confidence = llm_result.get("confidence", confidence)
                     used_llm = True
 
-                    # 重新提取实体（LLM可能识别出更多）
+                    # LLM同时提取实体
                     llm_entities = await self._llm_extract_entities(cleaned_text)
                     if llm_entities:
-                        entities = self._merge_entities(entities, llm_entities)
+                        entities = llm_entities
 
             except Exception as e:
                 print(f"⚠️ LLM intent classification failed: {e}, using rule-based result")
+
+        # Determine required slots
+        required_slots = self._get_required_slots(intent_level_1, intent_level_2)
 
         # Construct intent object
         intent = {
@@ -266,6 +279,8 @@ class ParserAgent:
             "confidence": confidence,
             "raw_text": cleaned_text,
             "used_llm": used_llm,
+            "used_ner": not used_llm and len(entities) > 0,
+            "bert_ner_available": self._bert_ner_available,
             "timestamp": self._get_timestamp()
         }
 
@@ -325,45 +340,6 @@ class ParserAgent:
             return "上报问题"
 
         return "未知"
-
-    def _refine_intent_level_2(self, text: str, level_1_intent: str, level_2_intent: str,
-                               entities: List[Dict[str, str]]) -> str:
-        """Refine intent level 2 based on extracted entities."""
-        text_lower = text.lower()
-
-        # For 信息查询, refine based on entity types
-        if level_1_intent == "信息查询":
-            entity_types = {e["type"] for e in entities}
-
-            # If we have order_id, determine specific query type
-            if "order_id" in entity_types:
-                if "明细" in text_lower:
-                    return "订单明细查询"
-                elif "物流" in text_lower or "运" in text_lower:
-                    return "物流查询"
-                return "订单查询"
-
-            # If we have customer_id
-            if "customer_id" in entity_types:
-                if "订单" in text_lower:
-                    return "客户订单查询"
-                elif "统计" in text_lower:
-                    return "客户统计查询"
-                return "客户查询"
-
-            # If we have product_card_id
-            if "product_card_id" in entity_types:
-                return "产品查询"
-
-        # For 工单管理
-        elif level_1_intent == "工单管理":
-            # If has action entity, it's an approval
-            entity_types = {e["type"] for e in entities}
-            if "action" in entity_types or "审批" in text_lower:
-                return "审批工单"
-            return "创建工单"
-
-        return level_2_intent
 
     def _extract_entities(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
         """Extract entities from text using rules and optional BERT NER."""
@@ -532,48 +508,83 @@ class ParserAgent:
 
         return processed
 
-    def _get_required_slots(self, intent_level_1: str, intent_level_2: str,
-                           entities: List[Dict[str, str]]) -> List[str]:
-        """Get required slots for the intent."""
+    def _extract_entities_with_ner(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
+        """
+        使用BERT NER提取实体（第二层）
+
+        Args:
+            text: 用户输入文本
+            intent_level_1: 一级意图
+
+        Returns:
+            实体列表（如果BERT NER不可用，返回空列表）
+        """
+        entities = []
+
+        # 使用BERT NER提取
+        if self._bert_ner_available and self._bert_ner:
+            try:
+                bert_entities = self._bert_ner.extract_for_intent(text, intent_level_1)
+                entities.extend(bert_entities)
+            except Exception as e:
+                print(f"⚠️ BERT NER failed: {e}")
+
+        # 注意：如果BERT NER不可用，返回空列表
+        # parse_intent() 会检测到实体为空，触发LLM补充
+
+        return entities
+
+    def _get_required_slots(self, intent_level_1: str, intent_level_2: str) -> List[str]:
+        """
+        获取意图所需的必填槽位（不依赖实体）
+
+        Args:
+            intent_level_1: 一级意图
+            intent_level_2: 二级意图
+
+        Returns:
+            必填槽位列表
+        """
         required_slots = []
 
-        if intent_level_1 in self.INTENT_PATTERNS:
-            base_slots = self.INTENT_PATTERNS[intent_level_1]["required_slots"]
-            required_slots.extend(base_slots)
-
         # 二级任务对应的必填参数（基于MCP工具参数定义）
-        if intent_level_2 == "客户查询":
-            required_slots.append("customer_id")
-        elif intent_level_2 == "客户订单查询":
-            required_slots.append("customer_id")
-        elif intent_level_2 == "客户统计查询":
-            required_slots.append("customer_id")
-        elif intent_level_2 == "订单查询":
-            required_slots.append("order_id")
-        elif intent_level_2 == "订单明细查询":
-            required_slots.append("order_id")
-        elif intent_level_2 == "物流查询":
-            required_slots.append("order_id")
-        elif intent_level_2 == "产品查询":
-            required_slots.append("product_card_id")
-        elif intent_level_2 == "创建工单":
-            required_slots.append("work_type")
-            required_slots.append("description")
-        elif intent_level_2 == "审批工单":
-            required_slots.append("work_order_id")
-            required_slots.append("action")
-        elif intent_level_2 == "上报问题":
-            required_slots.append("issue_type")
-            required_slots.append("description")
+        slot_mapping = {
+            "客户查询": ["customer_id"],
+            "客户订单查询": ["customer_id"],
+            "客户统计查询": ["customer_id"],
+            "订单查询": ["order_id"],
+            "订单明细查询": ["order_id"],
+            "物流查询": ["order_id"],
+            "产品查询": ["product_card_id"],
+            "创建工单": ["work_type", "description"],
+            "审批工单": ["work_order_id", "action"],
+            "上报问题": ["issue_type", "description"],
+        }
+
+        required_slots = slot_mapping.get(intent_level_2, [])
+
+        # 添加一级意图基础槽位
+        if intent_level_1 in self.INTENT_PATTERNS:
+            base_slots = self.INTENT_PATTERNS[intent_level_1].get("required_slots", [])
+            required_slots.extend(base_slots)
 
         return list(set(required_slots))  # Remove duplicates
 
     def _calculate_confidence(self, text: str, intent_level_1: str,
-                            entities: List[Dict[str, str]]) -> float:
-        """Calculate confidence score for intent detection."""
-        confidence = 0.5  # Base confidence
+                            intent_level_2: str) -> float:
+        """
+        计算意图识别置信度（仅基于规则匹配，不依赖实体）
 
-        # Boost for pattern matches
+        置信度计算规则：
+        - 基础分: 0.4
+        - 一级意图模式命中: +0.2
+        - 二级意图关键词命中: +0.2
+        - 文本长度合理(>=5): +0.1
+        - 短文本惩罚(<5): -0.1
+        """
+        confidence = 0.4  # Base confidence
+
+        # 一级意图模式匹配加分
         intent_info = self.INTENT_PATTERNS.get(intent_level_1, {})
         patterns = intent_info.get("patterns", [])
         for pattern in patterns:
@@ -581,29 +592,41 @@ class ParserAgent:
                 confidence += 0.2
                 break
 
-        # Boost for extracted entities
-        if entities:
-            confidence += min(0.3, len(entities) * 0.1)
+        # 二级意图关键词命中加分
+        if intent_level_2 != "未知":
+            confidence += 0.2
 
-        # Penalty for very short queries
-        if len(text) < 5:
-            confidence -= 0.2
+        # 文本长度调整
+        if len(text) >= 5:
+            confidence += 0.1
+        else:
+            confidence -= 0.1
 
         return max(0.1, min(1.0, confidence))  # Clamp between 0.1 and 1.0
 
-    def _needs_llm_intent(self, text: str, confidence: float, entities: List[Dict]) -> bool:
-        """判断是否需要LLM补充意图识别"""
+    def _needs_llm_intent(self, text: str, intent_level_1: str, intent_level_2: str, confidence: float) -> bool:
+        """
+        判断是否需要LLM补充
+
+        触发条件：
+        1. 一级意图未匹配到任何模式（返回默认值）
+        2. 二级意图为"未知"
+        3. 置信度低于阈值
+        """
+        # 规则未命中任何一级意图模式（使用默认值）
+        intent_info = self.INTENT_PATTERNS.get(intent_level_1, {})
+        patterns = intent_info.get("patterns", [])
+        pattern_matched = any(re.search(p, text.lower()) for p in patterns)
+
+        if not pattern_matched:
+            return True  # 规则未命中，需要LLM
+
+        # 二级意图未知
+        if intent_level_2 == "未知":
+            return True
+
         # 置信度低于阈值
         if confidence < settings.intent_confidence_threshold:
-            return True
-
-        # 未提取到实体
-        if not entities:
-            return True
-
-        # 包含模糊表达词
-        fuzzy_words = ["好像", "可能", "大概", "应该", "不确定", "那个", "某个"]
-        if any(word in text for word in fuzzy_words):
             return True
 
         return False
