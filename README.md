@@ -223,9 +223,9 @@ source env/bin/activate  # Linux/macOS
 pip install -r requirements.txt
 
 # 4. 配置环境变量
-# 编辑 .env 文件，配置API密钥（文件已存在，直接修改即可）
+# 编辑 .env 文件，配置API密钥
 
-# 5. 启动后端服务
+# 5. 启动后端
 python -m supply_chain_agent --mode web --port 8000
 
 # 6. 启动前端（另开终端）

@@ -13,6 +13,8 @@ from typing import Dict, Any, List, Optional
 import asyncio
 from dataclasses import dataclass
 import time
+import json
+from pathlib import Path
 
 from supply_chain_agent.config import settings
 from supply_chain_agent.tools.client import get_tool_client
@@ -30,6 +32,22 @@ try:
 except ImportError:
     RETRY_MANAGER_AVAILABLE = False
     print("⚠️ RetryManager not available, using basic retry logic")
+
+# 导入LLM客户端
+try:
+    from supply_chain_agent.agents.llm_client import get_llm_client
+    LLM_CLIENT_AVAILABLE = True
+except ImportError:
+    LLM_CLIENT_AVAILABLE = False
+    print("⚠️ LLM Client not available")
+
+# 导入Prompt模板
+try:
+    from supply_chain_agent.prompts.execution_plan import APPROVAL_PLAN_PROMPT
+    PROMPTS_AVAILABLE = True
+except ImportError:
+    PROMPTS_AVAILABLE = False
+    print("⚠️ Execution plan prompts not available")
 
 
 @dataclass
@@ -68,6 +86,7 @@ class ExecutorAgent:
         "产品查询": {"tool": "query_product", "level1": "信息查询"},
         "物流查询": {"tool": "query_shipment", "level1": "信息查询"},
         "客户统计查询": {"tool": "query_customer_statistics", "level1": "信息查询"},
+        "工单查询": {"tool": "query_work_order", "level1": "信息查询"},
         # 工单管理类
         "创建工单": {"tool": "create_work_order", "level1": "工单管理"},
         "审批工单": {"tool": "approve_work_order", "level1": "工单管理"},
@@ -85,15 +104,12 @@ class ExecutorAgent:
         "产品查询": "query_product",
         "物流查询": "query_shipment",
         "客户统计查询": "query_customer_statistics",
+        "工单查询": "query_work_order",
         # 工单管理类
         "创建工单": "create_work_order",
         "审批工单": "approve_work_order",
         # 异常上报类
         "上报问题": "report_issue",
-        # 兼容旧版intent映射
-        "信息查询": "query_order",
-        "工单管理": "create_work_order",
-        "异常上报": "report_issue",
     }
 
     # MCP工具参数定义
@@ -126,6 +142,10 @@ class ExecutorAgent:
             "required": ["customer_id"],
             "optional": []
         },
+        "query_work_order": {
+            "required": ["work_order_id"],
+            "optional": []
+        },
         "create_work_order": {
             "required": ["work_type", "description"],
             "optional": ["priority", "order_id", "assigned_to"]
@@ -146,6 +166,9 @@ class ExecutorAgent:
     VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
     VALID_URGENCIES = ["高", "中", "低"]
     VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
+
+    # AGENT.md 文件路径
+    AGENT_MD_PATH = Path(__file__).parent / "AGENT.md"
 
     def __init__(self):
         self.task_queue: List[Task] = []
@@ -175,6 +198,86 @@ class ExecutorAgent:
             self.retry_manager = RetryManager(retry_config, circuit_breaker_config)
         else:
             self.retry_manager = None
+
+        # 缓存的AGENT.md内容
+        self._agent_md_content: Optional[str] = None
+
+    def _load_agent_md(self) -> str:
+        """加载AGENT.md文件内容"""
+        if self._agent_md_content is not None:
+            return self._agent_md_content
+
+        try:
+            if self.AGENT_MD_PATH.exists():
+                self._agent_md_content = self.AGENT_MD_PATH.read_text(encoding="utf-8")
+                return self._agent_md_content
+            else:
+                print(f"⚠️ AGENT.md 文件不存在: {self.AGENT_MD_PATH}")
+                return ""
+        except Exception as e:
+            print(f"⚠️ 加载 AGENT.md 失败: {e}")
+            return ""
+
+    async def _generate_approval_plan_with_llm(self, intent: Dict[str, Any]) -> List[str]:
+        """
+        使用LLM根据AGENT.md生成审批工单的执行计划。
+
+        Args:
+            intent: 解析后的意图，包含 intent_level_1, intent_level_2, entities
+
+        Returns:
+            任务名称列表
+        """
+        if not LLM_CLIENT_AVAILABLE:
+            print("⚠️ LLM客户端不可用，使用默认审批流程")
+            return self._get_default_approval_plan()
+
+        if not PROMPTS_AVAILABLE:
+            print("⚠️ Prompt模板不可用，使用默认审批流程")
+            return self._get_default_approval_plan()
+
+        # 加载AGENT.md作为上下文
+        agent_md_content = self._load_agent_md()
+        if not agent_md_content:
+            print("⚠️ AGENT.md 内容为空，使用默认审批流程")
+            return self._get_default_approval_plan()
+
+        # 提取实体信息
+        extracted_slots = intent.get("entities", [])
+        slot_dict = {}
+        for entity in extracted_slots:
+            if isinstance(entity, dict):
+                slot_dict[entity.get("type")] = entity.get("value")
+
+        # 使用模板构建prompt
+        prompt = APPROVAL_PLAN_PROMPT.format(
+            agent_md_content=agent_md_content,
+            entities=json.dumps(slot_dict, ensure_ascii=False, indent=2)
+        )
+
+        try:
+            llm_client = get_llm_client()
+            result = await llm_client.generate_json(prompt)
+
+            # 解析LLM返回的任务列表
+            tasks = result.get("tasks", [])
+            task_names = [task.get("tool", "") for task in tasks]
+
+            print(f"📋 LLM生成的执行计划: {task_names}")
+
+            return task_names
+
+        except Exception as e:
+            print(f"⚠️ LLM生成执行计划失败: {e}，使用默认审批流程")
+            return self._get_default_approval_plan()
+
+    def _get_default_approval_plan(self) -> List[str]:
+        """获取默认的审批工单执行计划"""
+        return [
+            "query_work_order",
+            "query_order",
+            "query_customer_statistics"
+        ]
 
     def get_available_tools(self) -> Dict[str, Any]:
         """获取所有可用工具及其参数定义"""
@@ -282,6 +385,11 @@ class ExecutorAgent:
                 "customer_id": extracted_slots.get("customer_id")
             }
 
+        elif tool_name == "query_work_order":
+            return "query_work_order", {
+                "work_order_id": extracted_slots.get("work_order_id")
+            }
+
         elif tool_name == "create_work_order":
             work_type = extracted_slots.get("work_type", "其他")
             # 验证work_type
@@ -373,6 +481,7 @@ class ExecutorAgent:
             "query_product": 3,
             "query_shipment": 2,
             "query_customer_statistics": 3,
+            "query_work_order": 2,
             # 工单管理类
             "create_work_order": 1,
             "approve_work_order": 0,  # 需要确认，优先级最低
@@ -564,6 +673,11 @@ class ExecutorAgent:
             if isinstance(entity, dict):
                 slot_dict[entity.get("type")] = entity.get("value")
 
+        # 特殊处理：审批工单 - 使用LLM + AGENT.md生成执行计划
+        if intent_level_2 == "审批工单" or intent_level_1 == "工单管理" and "审批" in str(extracted_slots):
+            print(f"🎯 检测到审批工单意图，使用LLM生成执行计划...")
+            return await self._generate_approval_plan_with_llm(intent)
+
         # First try intent_level_2 (more specific), then intent_level_1 (fallback)
         tool_name = self.TOOL_MAPPING.get(intent_level_2,
                                           self.TOOL_MAPPING.get(intent_level_1, ""))
@@ -572,7 +686,7 @@ class ExecutorAgent:
             return [tool_name]
 
         # Default plan for unknown intents
-        return ["query_order"]  # Default fallback
+        return []  # Default fallback
 
     def _can_execute_tool(self, tool_name: str, slots: Dict[str, Any]) -> bool:
         """Check if a tool can be executed with available slots."""

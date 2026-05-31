@@ -272,7 +272,12 @@ class SupplyChainWorkflow:
 
         # Node 7: Report Generator
         async def generate_report_node(state: AgentState) -> Dict[str, Any]:
-            """Generate final report and response card."""
+            """Generate final report and response card.
+
+            此节点可以处理：
+            1. 正常的报告生成流程（从 audit_node 进入）
+            2. 错误响应生成（从 handle_error_node 进入）
+            """
             print("[进入节点: generate_report - 报告生成节点]")
 
             # Use shared report_generator instance from orchestrator
@@ -280,6 +285,49 @@ class SupplyChainWorkflow:
             if report_generator is None:
                 from supply_chain_agent.agents.report_generator import ReportGenerator
                 report_generator = ReportGenerator()
+
+            # 检查是否从 handle_error_node 进入
+            if state.get("from_error_handler", False):
+                print("[报告生成节点] 处理来自错误处理节点的请求")
+
+                error_code = state.get("error_code", "GENERAL_FALLBACK")
+                template_params = state.get("error_template_params", {})
+
+                # 调用 report_generator 的降级响应方法
+                fallback_response = await report_generator.generate_fallback_response(
+                    error_code,
+                    tool_results=state.get("tool_results", {}),
+                    **template_params
+                )
+
+                error_message = fallback_response.get("message", "系统遇到错误，请稍后重试。")
+                severity = fallback_response.get("severity", "warning")
+
+                return {
+                    "final_report": {
+                        "summary": error_message,
+                        "error_code": error_code,
+                        "severity": severity,
+                        "from_error_handler": True
+                    },
+                    "response_card": {
+                        "summary": error_message,
+                        "error_code": error_code,
+                        "severity": severity
+                    },
+                    "messages": state.get("messages", []) + [{
+                        "role": "assistant",
+                        "content": error_message
+                    }],
+                    "context_window": state.get("context_window", []) + [
+                        {
+                            "agent": "generate_report",
+                            "action": "generated_error_report_from_handler",
+                            "error_code": error_code,
+                            "severity": severity
+                        }
+                    ]
+                }
 
             try:
                 # Check if there were any tool errors
@@ -405,31 +453,101 @@ class SupplyChainWorkflow:
 
         # Node 8: Error Handler
         async def handle_error_node(state: AgentState) -> Dict[str, Any]:
-            """Handle errors and generate appropriate responses."""
+            """Handle errors and generate error code for report generation.
+
+            此节点不直接生成响应，而是根据错误类型生成错误编码，
+            然后路由到 generate_report_node 生成响应。
+            """
             print("[进入节点: handle_error - 错误处理节点]")
-            last_error = state.get("last_error")
+            last_error = state.get("last_error", "")
             error_count = state.get("error_count", 0)
+            validation_errors = state.get("validation_errors", [])
 
-            # Generate error response based on error type
-            if error_count >= 3:
-                response = "⚠️ **系统遇到多次错误**\n\n"
-            else:
-                response = "🔄 **系统暂时遇到问题**\n\n"
+            # Use shared report_generator instance from orchestrator
+            report_generator = self.orchestrator.report_generator if self.orchestrator else None
+            if report_generator is None:
+                from supply_chain_agent.agents.report_generator import ReportGenerator
+                report_generator = ReportGenerator()
 
-            if last_error:
-                response += f"**错误详情**: {last_error}\n\n"
-            else:
-                response += "**错误详情**: 未知错误\n\n"
+            # 根据错误类型确定错误编码
+            error_code = "GENERAL_FALLBACK"
 
-            response += "如果问题持续，请稍后重试或联系技术支持。"
+            # 1. 检查是否达到最大澄清循环次数
+            if state.get("max_clarification_reached", False):
+                error_code = "ENTITY_EXTRACTION_INCOMPLETE"
+            # 2. 检查是否有验证错误
+            elif validation_errors:
+                # 分析验证错误类型
+                validation_error_str = " ".join(validation_errors).lower()
+
+                if "parser" in validation_error_str:
+                    error_code = "INTENT_CLASSIFICATION_LOW_CONFIDENCE"
+                elif "entity" in validation_error_str or "实体" in validation_error_str:
+                    error_code = "ENTITY_EXTRACTION_INCOMPLETE"
+                elif "slot" in validation_error_str or "槽位" in validation_error_str:
+                    error_code = "SLOT_FILLING_FAILED"
+                elif "planning" in validation_error_str or "task" in validation_error_str:
+                    error_code = "WORKFLOW_EXECUTION_FAILED"
+                else:
+                    error_code = "WORKFLOW_EXECUTION_FAILED"
+            # 3. 根据错误计数和最后错误信息判断
+            elif error_count >= 3:
+                error_code = "TOOL_CALL_MAX_RETRIES_EXCEEDED"
+            elif last_error:
+                last_error_lower = last_error.lower()
+
+                # 数据库连接错误
+                if "database" in last_error_lower or "数据库" in last_error:
+                    error_code = "DATABASE_CONNECTION_FAILED"
+                # MCP 服务不可达
+                elif "mcp" in last_error_lower or "service" in last_error_lower or "服务" in last_error:
+                    error_code = "MCP_SERVER_UNREACHABLE"
+                # 熔断
+                elif "circuit" in last_error_lower or "熔断" in last_error:
+                    error_code = "CIRCUIT_BREAKER_OPEN"
+                # 会话过期
+                elif "session" in last_error_lower or "会话" in last_error:
+                    error_code = "SESSION_EXPIRED"
+                # 上下文超限
+                elif "context" in last_error_lower or "上下文" in last_error:
+                    error_code = "CONTEXT_LENGTH_EXCEEDED"
+                # 超时
+                elif "timeout" in last_error_lower or "超时" in last_error:
+                    error_code = "QUERY_ORDER_TIMEOUT"  # 通用超时
+                # 默认工作流执行失败
+                else:
+                    error_code = "WORKFLOW_EXECUTION_FAILED"
+
+            # 提取模板参数
+            extracted_slots = state.get("extracted_slots", {})
+            missing_slots = state.get("missing_slots", [])
+
+            template_params = report_generator.extract_template_params(
+                tool_name="workflow",
+                error_detail=last_error,
+                extracted_slots=extracted_slots,
+                tool_results=state.get("tool_results", {}),
+                missing_slots=missing_slots
+            )
+
+            # 生成追踪ID（用于通用错误）
+            if error_code == "GENERAL_FALLBACK":
+                import hashlib
+                trace_id = hashlib.md5(f"{last_error}{error_count}".encode()).hexdigest()[:12]
+                template_params["trace_id"] = trace_id
 
             return {
-                "messages": state.get("messages", []) + [{
-                    "role": "assistant",
-                    "content": response
-                }],
+                "error_code": error_code,
+                "error_template_params": template_params,
+                "from_error_handler": True,  # 标记来自错误处理节点
                 "context_window": state.get("context_window", []) + [
-                    {"agent": "handle_error", "action": "handled_error", "error": last_error}
+                    {
+                        "agent": "handle_error",
+                        "action": "determined_error_code",
+                        "error_code": error_code,
+                        "last_error": last_error,
+                        "error_count": error_count
+                    }
                 ]
             }
 
@@ -514,8 +632,8 @@ class SupplyChainWorkflow:
         # From report generator, end
         self.workflow.add_edge("generate_report", END)
 
-        # From error handler, end
-        self.workflow.add_edge("handle_error", END)
+        # From error handler, route to generate_report for response generation
+        self.workflow.add_edge("handle_error", "generate_report")
 
     def _check_clarification_needed(self, state: AgentState) -> str:
         """Check if clarification is needed."""

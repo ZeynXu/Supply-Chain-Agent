@@ -5,6 +5,7 @@ FastAPI application for Supply Chain Agent.
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.websockets import WebSocketState
 import uvicorn
 import asyncio
 import time
@@ -992,12 +993,23 @@ def create_app() -> FastAPI:
         await websocket.accept()
 
         async def send_event(event_type: str, data: dict):
-            """Helper to send agent events."""
-            await websocket.send_json({
-                "type": event_type,
-                "timestamp": int(datetime.now().timestamp() * 1000),
-                "data": data
-            })
+            """Helper to send agent events with connection state check."""
+            # Check if WebSocket is still connected before sending
+            if websocket.client_state == WebSocketState.DISCONNECTED:
+                print(f"⚠️ WebSocket disconnected, skipping {event_type} event")
+                return
+            try:
+                await websocket.send_json({
+                    "type": event_type,
+                    "timestamp": int(datetime.now().timestamp() * 1000),
+                    "data": data
+                })
+            except RuntimeError as e:
+                # Handle case where state check passes but send still fails
+                if "close message has been sent" in str(e):
+                    print(f"⚠️ WebSocket closed during {event_type} send: {e}")
+                    return
+                raise
 
         try:
             while True:
@@ -1008,10 +1020,7 @@ def create_app() -> FastAPI:
                 session_id = request.get("session_id", "default")
 
                 if not query:
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": "Query is required"
-                    })
+                    await send_event("error", {"error": "Query is required"})
                     continue
 
                 try:

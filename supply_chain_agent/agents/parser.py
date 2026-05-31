@@ -27,6 +27,7 @@ try:
     from supply_chain_agent.agents.llm_client import LLMClient, get_llm_client
     from supply_chain_agent.prompts.intent import INTENT_CLASSIFICATION_PROMPT
     from supply_chain_agent.prompts.entity import ENTITY_EXTRACTION_PROMPT
+    from supply_chain_agent.prompts.combined import COMBINED_INTENT_ENTITY_PROMPT
     LLM_AVAILABLE = True
 except ImportError:
     LLM_AVAILABLE = False
@@ -232,24 +233,26 @@ class ParserAgent:
         intent_level_2 = self._detect_intent_level_2(cleaned_text, intent_level_1)
         confidence = self._calculate_confidence(cleaned_text, intent_level_1, intent_level_2)
 
-        # 判断是否需要LLM（第一层判断）
-        needs_llm = self._needs_llm_intent(cleaned_text, intent_level_1, intent_level_2, confidence)
+        # 判断是否需要LLM补充意图识别（第一层判断）
+        needs_llm_for_intent = self._needs_llm_intent(cleaned_text, intent_level_1, intent_level_2, confidence)
         used_llm = False
         entities = []
 
-        # ========== 第二层：BERT NER - 实体提取 ==========
-        # 只有当不需要LLM时才执行第二层
-        if not needs_llm and self._bert_ner_available:
-            entities = self._extract_entities_with_ner(cleaned_text, intent_level_1)
-            # 如果BERT NER未提取到实体，可能需要LLM
-            if not entities:
-                needs_llm = True
+        # ========== 第二层：实体提取 ==========
+        # 始终执行第二层，不再跳过
+        entities = self._extract_entities(cleaned_text, intent_level_1)
+
+        # 如果第二层未提取到实体，可能需要LLM补充实体
+        needs_llm_for_entities = len(entities) == 0
 
         # ========== 第三层：LLM（如果需要）==========
+        # 触发条件：意图识别需要LLM 或 实体提取为空
+        needs_llm = needs_llm_for_intent or needs_llm_for_entities
+
         if needs_llm and self.llm_client:
             try:
-                # LLM意图识别
-                llm_result = await self._llm_classify_intent(cleaned_text)
+                # LLM同时进行意图识别和实体提取（单次调用）
+                llm_result = await self._llm_classify_and_extract(cleaned_text)
 
                 # 融合LLM结果
                 if llm_result:
@@ -258,8 +261,8 @@ class ParserAgent:
                     confidence = llm_result.get("confidence", confidence)
                     used_llm = True
 
-                    # LLM同时提取实体
-                    llm_entities = await self._llm_extract_entities(cleaned_text)
+                    # 使用LLM返回的实体
+                    llm_entities = llm_result.get("entities", [])
                     if llm_entities:
                         entities = llm_entities
 
@@ -631,35 +634,36 @@ class ParserAgent:
 
         return False
 
-    async def _llm_classify_intent(self, text: str) -> Optional[Dict[str, Any]]:
-        """使用LLM进行意图识别"""
+    async def _llm_classify_and_extract(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        使用LLM同时进行意图识别和实体提取
+
+        Args:
+            text: 用户输入文本
+
+        Returns:
+            包含意图和实体的字典，格式：
+            {
+                "intent_level_1": str,
+                "intent_level_2": str,
+                "confidence": float,
+                "entities": List[Dict]
+            }
+        """
         if not self.llm_client:
             return None
 
         try:
-            # 使用简单的字符串替换，避免格式化问题
-            prompt = INTENT_CLASSIFICATION_PROMPT.replace("{user_input}", text)
+            print("🔄 使用LLM进行意图识别+实体提取")
+            # 使用合并的prompt模板
+            prompt = COMBINED_INTENT_ENTITY_PROMPT.replace("{user_input}", text)
             result = await self.llm_client.generate_json(prompt)
-            return result
-        except Exception as e:
-            print(f"⚠️ LLM intent classification error: {e}")
-            return None
-
-    async def _llm_extract_entities(self, text: str) -> Optional[List[Dict[str, Any]]]:
-        """使用LLM进行实体提取"""
-        if not self.llm_client:
-            return None
-
-        try:
-            # 使用简单的字符串替换，避免格式化问题
-            prompt = ENTITY_EXTRACTION_PROMPT.replace("{user_input}", text)
-            result = await self.llm_client.generate_json(prompt)
-            entities = result.get("entities", [])
 
             # 标准化实体格式
-            standardized = []
+            entities = result.get("entities", [])
+            standardized_entities = []
             for e in entities:
-                standardized.append({
+                standardized_entities.append({
                     "type": e.get("type", "unknown"),
                     "value": e.get("value", ""),
                     "confidence": e.get("confidence", 1.0),
@@ -668,9 +672,14 @@ class ParserAgent:
                     "end": len(e.get("value", ""))
                 })
 
-            return standardized
+            return {
+                "intent_level_1": result.get("intent_level_1", "信息查询"),
+                "intent_level_2": result.get("intent_level_2", "未知"),
+                "confidence": result.get("confidence", 0.5),
+                "entities": standardized_entities
+            }
         except Exception as e:
-            print(f"⚠️ LLM entity extraction error: {e}")
+            print(f"⚠️ LLM combined classification error: {e}")
             return None
 
     def _merge_entities(

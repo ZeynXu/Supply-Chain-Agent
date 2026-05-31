@@ -40,6 +40,11 @@ class AgentState(TypedDict):
     last_error: Optional[str]
     circuit_breakers: Dict[str, Dict[str, Any]]
 
+    # Error code and template params (from handle_error_node)
+    error_code: Optional[str]
+    error_template_params: Dict[str, Any]
+    from_error_handler: bool
+
     # Final output
     final_report: Optional[Dict[str, Any]]
     response_card: Optional[Dict[str, Any]]
@@ -96,6 +101,9 @@ class StateManager:
             "error_count": 0,
             "last_error": None,
             "circuit_breakers": {},
+            "error_code": None,
+            "error_template_params": {},
+            "from_error_handler": False,
             "final_report": None,
             "response_card": None,
             "waiting_for_input": False,

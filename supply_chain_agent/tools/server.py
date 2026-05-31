@@ -419,7 +419,48 @@ class MCPServer:
                 ).to_dict()
 
         # ==========================================
-        # 4.8 create_work_order
+        # 4.8 query_work_order
+        # ==========================================
+        @self.mcp.tool()
+        def query_work_order(work_order_id: str) -> Dict[str, Any]:
+            """
+            根据工单ID查询工单详细信息。
+
+            Args:
+                work_order_id: 工单唯一标识，格式：WO-YYYYMMDD-XXX
+
+            Returns:
+                工单详细信息，包括类型、状态、优先级、描述、时间线等
+            """
+            try:
+                work_order = get_work_order(work_order_id)
+                if not work_order:
+                    return MCPError(
+                        code=ERROR_NOT_FOUND,
+                        message=f"工单 {work_order_id} 不存在"
+                    ).to_dict()
+
+                return {
+                    "work_order_id": work_order.get("work_order_id"),
+                    "order_id": work_order.get("order_id"),
+                    "work_type": work_order.get("work_type"),
+                    "status": work_order.get("status"),
+                    "priority": work_order.get("priority"),
+                    "description": work_order.get("description"),
+                    "assigned_to": work_order.get("assigned_to"),
+                    "created_by": work_order.get("created_by"),
+                    "created_at": work_order.get("created_at"),
+                    "updated_at": work_order.get("updated_at"),
+                    "timeline": work_order.get("timeline", [])
+                }
+            except Exception as e:
+                return MCPError(
+                    code=ERROR_INTERNAL,
+                    message=f"查询工单失败: {str(e)}"
+                ).to_dict()
+
+        # ==========================================
+        # 4.9 create_work_order
         # ==========================================
         @self.mcp.tool()
         def create_work_order(
@@ -493,7 +534,7 @@ class MCPServer:
                 ).to_dict()
 
         # ==========================================
-        # 4.9 approve_work_order
+        # 4.10 approve_work_order
         # ==========================================
         @self.mcp.tool()
         def approve_work_order(
@@ -564,7 +605,7 @@ class MCPServer:
                 ).to_dict()
 
         # ==========================================
-        # 4.10 report_issue
+        # 4.11 report_issue
         # ==========================================
         @self.mcp.tool()
         def report_issue(
@@ -687,6 +728,7 @@ class MCPServer:
         print("- query_product: 根据产品卡片ID查询产品信息")
         print("- query_shipment: 根据订单ID查询物流基本信息及状态描述")
         print("- query_customer_statistics: 获取客户的风险评估统计指标及当前履约占用")
+        print("- query_work_order: 根据工单ID查询工单详细信息")
         print("--- Write Operation Tools ---")
         print("- create_work_order: 创建新工单")
         print("- approve_work_order: 审批工单")
