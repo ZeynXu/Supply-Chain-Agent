@@ -168,7 +168,7 @@ export const useChat = () => {
               ws.close();
               resolve();
             }
-          }, 60000); // 60秒超时
+          }, 120000); // 120秒超时
         });
 
       } catch (error) {
