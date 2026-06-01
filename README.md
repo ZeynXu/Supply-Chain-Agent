@@ -19,11 +19,11 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-05-23: 重构数据架构，真实数据库交互替代Mock数据响应
 >
-> 2026-05-23: 更新MCP工具
->
-> 2026-05-24: 优化Executor Agent执行调用工具；优化意图识别实体提取
+> 2026-05-24: 更新MCP工具，优化Executor Agent工具调用；优化意图识别实体提取
 >
 > 2026-05-28: 重构意图识别分层体系；优化响应卡片
+>
+> 2026-06-01: 优化审批工单意图下，工具调用的规划与执行方案
 >
 
 ---
@@ -143,9 +143,9 @@ Supply-Chain-Agent/
 | 技术领域 | 选型方案 | 选择理由 |
 |---------|---------|---------|
 | **🧠 Agent框架** | LangGraph + LangChain | 成熟的多智能体编排和状态管理 |
-| **🌐 API服务** | FastAPI + Uvicorn | 高性能异步API框架 |
+| **🌐 API服务** | FastAPI + Uvicorn | 高性能异步API框架，支持REST和WebSocket |
 | **🖥️ 前端** | React 18 + TypeScript + Ant Design 5 | 企业级UI组件库 |
-| **🤖 LLM** | 智谱GLM-4.7（可配置） | 国产大模型，成本可控 |
+| **🤖 LLM** | 智谱GLM-4.7（可配置） | 国产大模型，成本可控，支持工具调用 |
 | **📝 NER** | BERT-base-chinese-wwm | 中文实体识别，准确率高 |
 | **📚 向量存储** | ChromaDB | 轻量级向量数据库 |
 | **💾 关系存储** | SQLite | 轻量级关系数据库 |
@@ -179,10 +179,10 @@ Supply-Chain-Agent/
 ### 🎯 核心功能
 
 - **🔍 三层意图识别**: 规则引擎(意图匹配) → BERT NER(实体提取) → LLM(兜底补充)，职责分离清晰
-- **📝 BERT实体识别**: 集成bert-base-chinese-wwm模型，准确提取订单号、客户ID、工单号等实体
-- **🔄 跨系统查询**: MCP工具调用，支持订单、物流、客户、产品查询
-- **📋 工单管理**: 创建质量检验、审批等工单，支持工单审批流转
-- **⚠️ 异常上报**: 智能异常分类和上报流程
+- **📝 BERT实体识别**: 集成bert-base-chinese-wwm模型，准确提取订单号、客户ID、工单号、产品卡ID等实体
+- **🔄 跨系统查询**: 11个MCP工具调用，支持订单、物流、客户、产品、工单查询与操作
+- **📋 工单管理**: 创建质量检验、审批等工单，支持工单查询和审批流转
+- **⚠️ 异常上报**: 智能异常分类和上报流程，支持紧急程度设置
 - **✅ 审批确认**: 支持审批操作，危险操作需二次确认
 
 ### 🌐 Web管理界面
@@ -338,13 +338,13 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 ## 📊 支持的意图
 
-### 任务分类体系 (V2.1)
+### 任务分类体系
 
 **一级任务分类**：
 
 | 一级任务 | 描述 | 包含二级任务 |
 |----------|------|--------------|
-| **信息查询** | 查询客户、订单、产品、物流等信息 | 客户查询、订单查询、产品查询、物流查询 |
+| **信息查询** | 查询客户、订单、产品、物流等信息 | 客户查询、订单查询、产品查询、物流查询、工单查询、客户统计 |
 | **工单管理** | 创建和审批工单 | 创建工单、审批工单 |
 | **异常上报** | 上报供应链过程中的问题 | 异常上报 |
 
@@ -353,9 +353,13 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 | 二级任务 | 调用工具 | 必需参数 | 可选参数 |
 |----------|----------|----------|----------|
 | **客户查询** | query_customer | customer_id | - |
+| **客户订单查询** | query_customer_orders | customer_id | - |
 | **订单查询** | query_order | order_id | - |
+| **订单明细查询** | query_order_items | order_id | - |
 | **产品查询** | query_product | product_card_id | - |
 | **物流查询** | query_shipment | order_id | - |
+| **客户统计** | query_customer_statistics | customer_id | - |
+| **工单查询** | query_work_order | work_order_id | - |
 | **创建工单** | create_work_order | work_type, description | order_id, customer_id, priority |
 | **审批工单** | approve_work_order | work_order_id, action | comment |
 | **异常上报** | report_issue | issue_type, description | order_id, urgency |
@@ -366,8 +370,12 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 |--------------|----------|----------|
 | "查询订单77202的状态" | 信息查询→订单查询 | query_order |
 | "订单77202的物流到哪了" | 信息查询→物流查询 | query_shipment |
+| "订单77202有哪些商品" | 信息查询→订单明细查询 | query_order_items |
 | "客户20755的信息" | 信息查询→客户查询 | query_customer |
+| "客户20755的所有订单" | 信息查询→客户订单查询 | query_customer_orders |
+| "客户20755的统计数据" | 信息查询→客户统计 | query_customer_statistics |
 | "创建质检工单，订单77202" | 工单管理→创建工单 | create_work_order |
+| "查询工单WO-2024-001" | 信息查询→工单查询 | query_work_order |
 | "审批工单WO-2024-001通过" | 工单管理→审批工单 | approve_work_order |
 | "报告订单75939物流延迟" | 异常上报 | report_issue |
 
@@ -406,6 +414,20 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 ## 🏗️ 架构设计
 
+### 📊 代码规模统计
+
+| 模块 | 文件 | 代码行数 | 主要职责 |
+|------|------|----------|----------|
+| **Orchestrator** | orchestrator.py | ~650行 | 总控协调、状态管理 |
+| **Parser** | parser.py | ~830行 | 意图识别、实体提取 |
+| **Executor** | executor.py | ~1087行 | 工具编排、执行控制 |
+| **Auditor** | auditor.py | ~334行 | 结果验证、风控审计 |
+| **MCP Server** | server.py | ~754行 | 工具服务、数据查询 |
+| **Workflow** | workflow.py | ~949行 | 状态机、节点逻辑 |
+| **Database** | supply_chain_db.py | ~1426行 | 数据存储、业务查询 |
+| **App** | app.py | ~1077行 | API服务、WebSocket |
+| **总计** | - | **~7642行** | 核心业务代码 |
+
 ### 📋 设计原则
 
 基于"**使用成熟技术架构专注业务场景创新**"的理念：
@@ -420,27 +442,44 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 #### 核心智能体职责
 
-1. **🎯 Orchestrator (总控Agent)**
+1. **🎯 Orchestrator (总控Agent)** (~650行)
    - 职责：全局状态管理、上下文窗口管理、子Agent调度
-   - 能力：工作流控制、中断恢复、事件回调
+   - 能力：工作流控制、中断恢复、事件回调、依赖注入
+   - 核心方法：`process()`, `process_with_callback()`
    - 输出：最终响应
 
-2. **🔍 Parser (解析师Agent)**
+2. **🔍 Parser (解析师Agent)** (~830行)
    - 职责：意图识别、实体提取、槽位填充
-   - 能力：规则引擎+LLM融合识别
-   - 输出：结构化意图
+   - 能力：规则引擎+BERT NER+LLM三层融合识别
+   - 核心方法：`parse_intent()`, `_extract_entities_by_rules()`
+   - 输出：结构化意图（primary_task, secondary_task, entities, slots）
 
-3. **⚙️ Executor (调度员Agent)**
+3. **⚙️ Executor (调度员Agent)** (~1087行)
    - 职责：工具编排、并发控制、结果收集
-   - 能力：熔断保护、智能重试
+   - 能力：熔断保护、智能重试、LLM反馈执行
+   - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`
    - 输出：工具执行结果
 
-4. **🛡️ Auditor (审计员Agent)**
+4. **🛡️ Auditor (审计员Agent)** (~334行)
    - 职责：结果验证、风控拦截、一致性检查
-   - 能力：多维度审计规则
-   - 输出：审计报告
+   - 能力：多维度审计规则（missing_tracking_number, unusual_delivery_time等）
+   - 核心方法：`audit_results()`, `_check_single_result()`
+   - 输出：审计报告（passed, issues, suggestions）
 
 ### 🔄 协作流程
+
+**LangGraph 8节点状态机**：
+
+| 节点 | 职责 | 输入 | 输出 |
+|------|------|------|------|
+| parse_input | 意图解析 | 用户输入 | 意图+实体 |
+| clarify | 澄清确认 | 不完整意图 | 澄清问题 |
+| plan_task | 任务规划 | 结构化意图 | 执行计划 |
+| execute_task | 工具执行 | 执行计划 | 工具结果 |
+| retry | 智能重试 | 失败结果 | 重试策略 |
+| audit | 结果审计 | 执行结果 | 审计报告 |
+| generate_report | 报告生成 | 审计结果 | 最终响应 |
+| handle_error | 错误处理 | 错误信息 | 友好提示 |
 
 ```mermaid
 graph TD
@@ -469,7 +508,8 @@ graph TD
    - 支持依赖注入，便于解耦
 
 2. **🔄 LangGraph状态机**
-   - 8节点状态机，支持中断恢复和Human-in-the-loop
+   - 8节点状态机（parse_input → clarify → plan_task → execute_task → retry → audit → generate_report → handle_error）
+   - 支持中断恢复和Human-in-the-loop
    - 检查点持久化，支持断点恢复
 
 3. **🧠 三层记忆系统**
@@ -478,7 +518,7 @@ graph TD
 
 4. **📝 三层意图识别架构**
    - 第一层：规则引擎专注意图模式匹配（一级+二级）+ 置信度计算
-   - 第二层：BERT NER专注实体提取
+   - 第二层：BERT NER专注实体提取（order_id、customer_id、product_card_id、work_order_id等）
    - 第三层：LLM兜底（意图分类+实体提取）
    - 职责分离清晰，降低LLM调用成本
 
@@ -489,8 +529,8 @@ graph TD
 ### 🚀 工程实践
 
 1. **⚡ 三层意图识别**
-   - 规则引擎优先：意图模式匹配 + 置信度计算
-   - BERT NER补充：实体提取（第二层）
+   - 规则引擎优先：意图模式匹配 + 置信度计算（score基于关键词匹配）
+   - BERT NER补充：实体提取，支持订单号、客户ID、产品卡ID、工单号等
    - LLM兜底：规则未命中/置信度低/实体为空时触发
 
 2. **📉 知识库降级**
@@ -506,7 +546,7 @@ graph TD
    - 量化指标，持续优化
 
 5. **🔗 MCP工具对齐**
-   - 10个MCP工具完整实现，无虚构工具调用
+   - 11个MCP工具完整实现，无虚构工具调用
    - 参数验证严格，可选参数按需传递
 
 ## 📂 数据说明

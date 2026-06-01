@@ -43,7 +43,11 @@ except ImportError:
 
 # 导入Prompt模板
 try:
-    from supply_chain_agent.prompts.execution_plan import APPROVAL_PLAN_PROMPT
+    from supply_chain_agent.prompts.execution_plan import (
+        APPROVAL_PLAN_PROMPT,
+        TOOL_PARAM_EXTRACTION_PROMPT,
+        INITIAL_PARAM_GENERATION_PROMPT
+    )
     PROMPTS_AVAILABLE = True
 except ImportError:
     PROMPTS_AVAILABLE = False
@@ -687,6 +691,314 @@ class ExecutorAgent:
 
         # Default plan for unknown intents
         return []  # Default fallback
+
+    async def execute_plan_with_llm_feedback(
+        self,
+        execution_plan: List[str],
+        initial_slots: Dict[str, Any],
+        intent: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        执行工具计划，每一步都将结果发送给LLM解析获取下一步工具的入参。
+
+        流程：
+        1. 开始执行前，可选启动一个独立的LLM调用获取初始参数（如有则不改动）
+        2. 依次执行每个工具
+        3. 每执行完一个工具，将执行结果发送给LLM解析
+        4. LLM输出下一步工具执行的入参
+        5. 结合入参和当前待执行工具，继续工具执行
+        6. 直至执行计划的所有工具执行完毕，或抛出异常退出
+
+        Args:
+            execution_plan: 工具名称列表，如 ['query_work_order', 'query_order', 'query_customer_statistics']
+            initial_slots: 初始实体/槽位信息
+            intent: 用户意图
+
+        Returns:
+            包含所有执行结果和最终状态的字典
+        """
+        if not execution_plan:
+            print("⚠️ 执行计划为空，无需执行")
+            return {
+                "success": True,
+                "results": {},
+                "message": "执行计划为空"
+            }
+
+        print(f"📋 开始执行计划，共 {len(execution_plan)} 个工具: {execution_plan}")
+
+        # 初始化执行状态
+        current_slots = dict(initial_slots)  # 复制初始槽位
+        all_results = {}  # 存储所有工具执行结果
+        execution_context = {
+            "intent": intent,
+            "plan": execution_plan,
+            "executed_tools": [],
+            "current_step": 0
+        }
+
+        try:
+            # 依次执行每个工具
+            for step_index, tool_name in enumerate(execution_plan):
+                execution_context["current_step"] = step_index + 1
+                print(f"\n🔧 [步骤 {step_index + 1}/{len(execution_plan)}] 执行工具: {tool_name}")
+
+                # 如果是第一步且需要LLM生成初始参数，可以在这里调用
+                # 但用户说"如有则不改动"，所以保持现有逻辑
+
+                # 使用当前槽位构建参数并执行工具
+                tool_result = await self._execute_single_tool_with_slots(
+                    tool_name,
+                    current_slots,
+                    execution_context
+                )
+
+                # 记录执行结果
+                all_results[tool_name] = tool_result
+                execution_context["executed_tools"].append(tool_name)
+
+                # 检查执行是否成功
+                if tool_result.get("error") or tool_result.get("success") == False:
+                    error_msg = tool_result.get("error", "未知错误")
+                    print(f"❌ 工具 {tool_name} 执行失败: {error_msg}")
+                    # 执行失败，终止流程
+                    return {
+                        "success": False,
+                        "results": all_results,
+                        "error": f"工具 {tool_name} 执行失败: {error_msg}",
+                        "failed_at_step": step_index + 1,
+                        "execution_context": execution_context
+                    }
+
+                print(f"✅ 工具 {tool_name} 执行成功")
+
+                # 如果还有下一个工具，将当前结果发送给LLM解析获取下一步入参
+                if step_index < len(execution_plan) - 1:
+                    next_tool_name = execution_plan[step_index + 1]
+                    print(f"📤 将执行结果发送给LLM，解析下一步工具 {next_tool_name} 的入参...")
+
+                    # 调用LLM解析结果并生成下一步参数
+                    llm_params = await self._llm_parse_for_next_tool_params(
+                        current_tool=tool_name,
+                        current_result=tool_result,
+                        next_tool=next_tool_name,
+                        current_slots=current_slots,
+                        execution_context=execution_context
+                    )
+
+                    if llm_params:
+                        # 更新槽位，合并LLM生成的参数
+                        current_slots.update(llm_params)
+                        print(f"📥 LLM返回的参数: {llm_params}")
+                    else:
+                        print(f"⚠️ LLM未返回有效参数，继续使用当前槽位")
+
+            # 所有工具执行完毕
+            print(f"\n🎉 执行计划完成，共执行 {len(execution_plan)} 个工具")
+            return {
+                "success": True,
+                "results": all_results,
+                "final_slots": current_slots,
+                "execution_context": execution_context
+            }
+
+        except Exception as e:
+            print(f"❌ 执行计划异常: {e}")
+            return {
+                "success": False,
+                "results": all_results,
+                "error": f"执行计划异常: {str(e)}",
+                "execution_context": execution_context
+            }
+
+    async def _execute_single_tool_with_slots(
+        self,
+        tool_name: str,
+        slots: Dict[str, Any],
+        execution_context: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        使用当前槽位执行单个工具。
+
+        Args:
+            tool_name: 工具名称
+            slots: 当前槽位信息
+            execution_context: 执行上下文
+
+        Returns:
+            工具执行结果
+        """
+        # 根据工具名称构建参数
+        parameters = self._build_tool_parameters(tool_name, slots)
+
+        # 验证参数
+        validation_result = self._validate_tool_params(tool_name, parameters)
+        if not validation_result["valid"]:
+            return {
+                "error": validation_result["message"],
+                "tool": tool_name,
+                "success": False,
+                "error_type": "validation_failed"
+            }
+
+        # 创建任务并执行
+        task = Task(
+            name=tool_name,
+            tool_name=tool_name,
+            parameters=parameters,
+            priority=self._get_task_priority(tool_name)
+        )
+
+        return await self._execute_tool(task)
+
+    def _build_tool_parameters(self, tool_name: str, slots: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        根据工具名称和当前槽位构建工具参数。
+
+        Args:
+            tool_name: 工具名称
+            slots: 当前槽位信息
+
+        Returns:
+            工具参数字典
+        """
+        # 复用现有的映射逻辑
+        _, parameters = self._map_task_to_tool(tool_name, slots)
+        return parameters
+
+    async def _llm_parse_for_next_tool_params(
+        self,
+        current_tool: str,
+        current_result: Dict[str, Any],
+        next_tool: str,
+        current_slots: Dict[str, Any],
+        execution_context: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        使用LLM解析当前工具执行结果，生成下一个工具的入参。
+
+        Args:
+            current_tool: 当前执行的工具名称
+            current_result: 当前工具的执行结果
+            next_tool: 下一个要执行的工具名称
+            current_slots: 当前槽位信息
+            execution_context: 执行上下文
+
+        Returns:
+            下一个工具的参数字典，或None如果解析失败
+        """
+        if not LLM_CLIENT_AVAILABLE:
+            print("⚠️ LLM客户端不可用，无法解析结果")
+            return None
+
+        # 构建prompt
+        prompt = self._build_llm_param_extraction_prompt(
+            current_tool,
+            current_result,
+            next_tool,
+            current_slots,
+            execution_context
+        )
+
+        try:
+            llm_client = get_llm_client()
+            result = await llm_client.generate_json(prompt)
+
+            # 提取参数
+            params = result.get("parameters", {})
+            return params
+
+        except Exception as e:
+            print(f"⚠️ LLM解析参数失败: {e}")
+            return None
+
+    def _build_llm_param_extraction_prompt(
+        self,
+        current_tool: str,
+        current_result: Dict[str, Any],
+        next_tool: str,
+        current_slots: Dict[str, Any],
+        execution_context: Dict[str, Any]
+    ) -> str:
+        """
+        构建用于LLM解析下一步工具参数的prompt。
+
+        Args:
+            current_tool: 当前工具名称
+            current_result: 当前工具执行结果
+            next_tool: 下一个工具名称
+            current_slots: 当前槽位
+            execution_context: 执行上下文
+
+        Returns:
+            构建好的prompt字符串
+        """
+        # 获取下一个工具的参数定义
+        next_tool_params_def = self.TOOL_PARAMS.get(next_tool, {})
+        required_params = next_tool_params_def.get("required", [])
+        optional_params = next_tool_params_def.get("optional", [])
+
+        # 如果有模板，使用模板
+        if PROMPTS_AVAILABLE:
+            prompt = TOOL_PARAM_EXTRACTION_PROMPT.format(
+                execution_plan=json.dumps(execution_context.get("plan", []), ensure_ascii=False),
+                executed_tools=json.dumps(execution_context.get("executed_tools", []), ensure_ascii=False),
+                current_step=execution_context.get("current_step", 1),
+                current_tool=current_tool,
+                current_result=json.dumps(current_result, ensure_ascii=False, indent=2, default=str),
+                next_tool=next_tool,
+                required_params=json.dumps(required_params, ensure_ascii=False),
+                optional_params=json.dumps(optional_params, ensure_ascii=False),
+                current_slots=json.dumps(current_slots, ensure_ascii=False, indent=2)
+            )
+            return prompt
+
+        # 降级：使用简化的prompt
+        prompt = f"""你是一个供应链系统的参数提取专家。请根据当前工具的执行结果，为下一个工具提取或生成所需的参数。
+
+## 当前执行状态
+- 执行计划: {execution_context.get('plan', [])}
+- 已执行工具: {execution_context.get('executed_tools', [])}
+- 当前步骤: {execution_context.get('current_step', 1)}
+
+## 当前工具执行结果
+工具名称: {current_tool}
+执行结果:
+```json
+{json.dumps(current_result, ensure_ascii=False, indent=2, default=str)}
+```
+
+## 下一个要执行的工具
+工具名称: {next_tool}
+必需参数: {required_params}
+可选参数: {optional_params}
+
+## 当前已有的槽位信息
+```json
+{json.dumps(current_slots, ensure_ascii=False, indent=2)}
+```
+
+## 任务
+请分析当前工具的执行结果，为下一个工具提取或生成所需的参数。
+- 优先从执行结果中提取参数值
+- 如果执行结果中没有所需参数，尝试从已有槽位中获取
+- 如果是工单查询结果，注意提取 customer_id、order_id 等关联信息
+- 只返回下一个工具实际需要的参数
+
+请直接输出JSON格式的结果，格式如下：
+```json
+{{
+  "parameters": {{
+    "参数名": "参数值"
+  }}
+}}
+```
+
+注意：
+1. 只输出JSON，不要包含其他文字说明
+2. 参数值要准确，从执行结果中提取时要保持原始格式
+3. 如果某个必需参数无法从结果中获取，可以在parameters中设为null"""
+        return prompt
 
     def _can_execute_tool(self, tool_name: str, slots: Dict[str, Any]) -> bool:
         """Check if a tool can be executed with available slots."""

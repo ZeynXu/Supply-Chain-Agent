@@ -174,7 +174,12 @@ class SupplyChainWorkflow:
 
         # Node 4: Executor Agent (调度员)
         async def execute_task_node(state: AgentState) -> Dict[str, Any]:
-            """Execute tasks using tools."""
+            """Execute tasks using tools.
+
+            支持两种执行模式：
+            1. 普通模式：逐个执行任务队列中的工具
+            2. 链式执行模式（审批工单）：执行每个工具后，将结果发送给LLM解析获取下一步入参
+            """
             print("[进入节点: execute_task - 执行器节点]")
 
             # Use shared executor instance from orchestrator
@@ -186,7 +191,52 @@ class SupplyChainWorkflow:
             if not state.get("task_queue"):
                 return {"execution_complete": True}
 
+            # 检查是否应该使用链式执行模式
+            user_intent = state.get("user_intent", {})
+            intent_level_2 = user_intent.get("intent_level_2", "")
+            use_chain_execution = (
+                intent_level_2 == "审批工单" or
+                state.get("use_chain_execution", False) or
+                len(state.get("task_queue", [])) > 1  # 多个工具时使用链式执行
+            )
+
             try:
+                # 链式执行模式：一次性执行所有工具，每步LLM解析结果
+                if use_chain_execution and len(state.get("task_queue", [])) > 1:
+                    print(f"🔗 使用链式执行模式，执行计划: {state.get('task_queue', [])}")
+
+                    chain_result = await executor.execute_plan_with_llm_feedback(
+                        execution_plan=state.get("task_queue", []),
+                        initial_slots=state.get("extracted_slots", {}),
+                        intent=user_intent
+                    )
+
+                    # 构建更新状态
+                    updates = {
+                        "tool_results": chain_result.get("results", {}),
+                        "task_queue": [],  # 清空任务队列
+                        "current_task": None,
+                        "execution_complete": chain_result.get("success", False),
+                        "chain_execution_result": chain_result,
+                    }
+
+                    if not chain_result.get("success", False):
+                        updates["execution_failed"] = True
+                        updates["error_count"] = state.get("error_count", 0) + 1
+                        updates["last_error"] = chain_result.get("error", "链式执行失败")
+
+                    # Add to context
+                    context_item = {
+                        "agent": "execute_task",
+                        "action": "chain_execution",
+                        "plan": state.get("task_queue", []),
+                        "result": chain_result
+                    }
+                    updates["context_window"] = state.get("context_window", []) + [context_item]
+
+                    return updates
+
+                # 普通执行模式：逐个执行
                 task = state["task_queue"][0]
                 result = await executor.execute_task(task, state.get("extracted_slots", {}))
 

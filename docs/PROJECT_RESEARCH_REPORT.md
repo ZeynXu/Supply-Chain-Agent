@@ -1,9 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.2  
-**生成日期**: 2026年5月28日  
+**文档版本**: V2.3  
+**生成日期**: 2026年6月1日  
 **研究范围**: 完整项目代码与文档分析  
-**更新说明**: 意图识别分层体系重构（三层架构）  
+**更新说明**: 基于代码实际实现进行全面更新  
 
 ---
 
@@ -53,49 +53,54 @@
 Supply_Chain_Agent/
 ├── supply_chain_agent/           # 主模块
 │   ├── agents/                   # Agent定义
-│   │   ├── orchestrator.py       # 总控Agent - 协调所有子Agent
-│   │   ├── parser.py             # 解析师Agent - 意图识别与实体提取
-│   │   ├── executor.py           # 调度员Agent - 工具编排与执行
-│   │   ├── auditor.py            # 审计员Agent - 结果验证与风控
-│   │   ├── report_generator.py   # 报告生成器 - 响应格式化
+│   │   ├── orchestrator.py       # 总控Agent - 协调所有子Agent (~650行)
+│   │   ├── parser.py             # 解析师Agent - 意图识别与实体提取 (~830行)
+│   │   ├── executor.py           # 调度员Agent - 工具编排与执行 (~1087行)
+│   │   ├── auditor.py            # 审计员Agent - 结果验证与风控 (~334行)
+│   │   ├── report_generator.py   # 报告生成器 - 响应格式化 (~475行)
 │   │   ├── retry_manager.py      # 重试管理器 - 智能重试与熔断
-│   │   └── llm_client.py         # LLM客户端 - 统一LLM接口
-│   ├── nlp/                      # NLP模块 (新增)
-│   │   ├── bert_ner.py           # BERT NER实体识别
+│   │   └── llm_client.py         # LLM客户端 - 统一LLM接口 (~205行)
+│   ├── nlp/                      # NLP模块
+│   │   ├── bert_ner.py           # BERT NER实体识别 (~330行)
 │   │   └── __init__.py           # 模块初始化
-│   ├── models/                   # 模型文件 (新增)
+│   ├── models/                   # 模型文件
 │   │   └── bert-chinese-wwm/     # BERT中文预训练模型
 │   │       ├── config.json       # 模型配置
 │   │       ├── pytorch_model.bin # 模型权重 (~393MB)
 │   │       └── vocab.txt         # 词表文件
 │   ├── tools/                    # MCP工具实现
-│   │   ├── server.py             # MCP服务器 - 工具服务端
-│   │   └── client.py             # 工具客户端 - 带熔断保护
+│   │   ├── server.py             # MCP服务器 - 工具服务端 (~754行)
+│   │   └── client.py             # 工具客户端 - 带熔断保护 (~490行)
 │   ├── graph/                    # LangGraph工作流
-│   │   ├── state.py              # 全局状态定义
-│   │   ├── workflow.py           # 节点与边逻辑
+│   │   ├── state.py              # 全局状态定义 (~223行)
+│   │   ├── workflow.py           # 节点与边逻辑 (~949行)
 │   │   └── visualizer.py         # 工作流可视化
 │   ├── memory/                   # 记忆系统
-│   │   ├── vector_store.py       # 向量存储管理
+│   │   ├── vector_store.py       # 向量存储管理 (~666行)
 │   │   ├── checkpoint.py         # 检查点管理
 │   │   └── knowledge_retriever.py# 知识检索器
 │   ├── prompts/                  # Prompt模板
 │   │   ├── intent.py             # 意图识别Prompt
 │   │   ├── entity.py             # 实体提取Prompt
-│   │   └── fallback.py           # 降级响应Prompt
+│   │   ├── fallback.py           # 降级响应Prompt
+│   │   ├── fallback_templates.py # 降级响应模板
+│   │   ├── execution_plan.py     # 执行计划Prompt
+│   │   └── combined.py           # 组合Prompt
 │   ├── monitoring/               # 监控系统
 │   │   └── stability_monitor.py  # 稳定性监控
+│   ├── utils/                    # 工具函数
+│   │   └── field_mapping.py      # 字段映射
 │   ├── frontend/                 # React前端
-│   ├── app.py                    # FastAPI应用
+│   ├── app.py                    # FastAPI应用 (~1077行)
 │   ├── run.py                    # 运行脚本
-│   └── config.py                 # 配置管理
+│   └── config.py                 # 配置管理 (~148行)
 ├── supply_chain_agent/data/      # Python数据模块
 │   ├── supply_chain.db           # SQLite 业务数据库 (运行时)
 │   ├── vector_store/             # ChromaDB 向量存储 (SOP 文档)
 │   ├── agent_memory.db           # SQLite 记忆数据库
 │   ├── data_loader.py            # 数据加载器
 │   ├── init_data.py              # 数据初始化脚本
-│   └── supply_chain_db.py        # 数据库操作模块
+│   └── supply_chain_db.py        # 数据库操作模块 (~1426行)
 ├── dataset/                      # 数据源目录
 │   ├── BusinessData/             # 业务数据源
 │   │   └── DataCoSupplyChainDataset.csv
@@ -137,12 +142,12 @@ Supply_Chain_Agent/
 
 **职责分工**：
 
-| Agent | 职责 | 输入 | 输出 |
-|-------|------|------|------|
-| **Orchestrator** | 全局状态管理、上下文窗口管理、子Agent调度 | 用户输入 | 最终响应 |
-| **Parser** | 意图识别、实体提取、槽位填充 | 用户文本 | 结构化意图 |
-| **Executor** | 工具编排、并发控制、结果收集 | 执行计划 | 工具结果 |
-| **Auditor** | 结果验证、风控拦截、一致性检查 | 工具结果 | 审计报告 |
+| Agent | 职责 | 输入 | 输出 | 代码行数 |
+|-------|------|------|------|----------|
+| **Orchestrator** | 全局状态管理、上下文窗口管理、子Agent调度 | 用户输入 | 最终响应 | ~650行 |
+| **Parser** | 意图识别、实体提取、槽位填充 | 用户文本 | 结构化意图 | ~830行 |
+| **Executor** | 工具编排、并发控制、结果收集 | 执行计划 | 工具结果 | ~1087行 |
+| **Auditor** | 结果验证、风控拦截、一致性检查 | 工具结果 | 审计报告 | ~334行 |
 
 ### 2.2 LangGraph工作流状态机
 
@@ -193,7 +198,7 @@ Supply_Chain_Agent/
 1. **parse_input**: 解析用户意图，提取实体
 2. **clarify**: 处理缺失信息，使用interrupt等待用户输入
 3. **plan_task**: 根据意图生成执行计划
-4. **execute_task**: 执行工具调用
+4. **execute_task**: 执行工具调用（支持链式执行模式）
 5. **retry**: 处理失败任务的重试逻辑
 6. **audit**: 验证执行结果
 7. **generate_report**: 生成最终响应
@@ -303,7 +308,7 @@ def __init__(self,
 - 槽位填充
 - 模糊输入处理
 
-**意图识别分层架构（V2.2更新）**：
+**意图识别分层架构**：
 
 | 层级 | 组件 | 职责 | 触发条件 |
 |------|------|------|----------|
@@ -311,7 +316,7 @@ def __init__(self,
 | **第二层** | BERT NER | 实体提取 | 规则命中且BERT模型可用 |
 | **第三层** | LLM | 意图分类 + 实体提取 | 规则未命中/置信度低/实体为空 |
 
-**任务分类体系（V2.1更新）**：
+**任务分类体系**：
 
 | 一级意图 | 说明 | 二级意图 | 对应MCP工具 |
 |----------|------|----------|-------------|
@@ -322,74 +327,12 @@ def __init__(self,
 | | | 产品查询 | query_product |
 | | | 物流查询 | query_shipment |
 | | | 客户统计查询 | query_customer_statistics |
+| | | 工单查询 | query_work_order |
 | **工单管理** | 创建和审批工单 | 创建工单 | create_work_order |
 | | | 审批工单 | approve_work_order |
 | **异常上报** | 上报供应链过程中的问题 | 上报问题 | report_issue |
 
-**意图识别流程（三层架构）**：
-
-```python
-async def parse_intent(self, text: str) -> Dict[str, Any]:
-    """
-    三层意图识别架构：
-    
-    第一层：规则引擎 - 意图模式匹配（一级+二级）+ 置信度计算
-    第二层：BERT NER - 实体提取（仅当BERT模型可用时）
-    第三层：LLM - 意图分类 + 实体提取（规则未命中/置信度低/实体为空时触发）
-    
-    触发LLM的条件：
-    1. 规则未命中任何一级意图模式
-    2. 二级意图为"未知"
-    3. 置信度低于阈值（默认0.75）
-    4. BERT NER不可用或未提取到实体
-    """
-```
-
-**三层架构流程图**：
-
-```
-用户输入
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────┐
-│          第一层：规则引擎（意图模式匹配）                       │
-│  • _detect_intent_level_1(): 正则匹配一级意图                 │
-│  • _detect_intent_level_2(): 关键词匹配二级意图               │
-│  • _calculate_confidence(): 计算置信度（不依赖实体）           │
-│  输出: intent_level_1, intent_level_2, confidence            │
-└─────────────────────────────────────────────────────────────┘
-    │
-    ▼ 规则未命中 OR 置信度 < 阈值？
-    │
-    ├─ 否 ─────────────────────────────────────────────────────┐
-    │                                                          │
-    │                                                          ▼
-    │                          ┌───────────────────────────────────────────┐
-    │                          │      第二层：BERT NER（实体提取）           │
-    │                          │  • _extract_entities_with_ner()           │
-    │                          │  • 仅当 _bert_ner_available == True       │
-    │                          │  输出: entities                            │
-    │                          └───────────────────────────────────────────┘
-    │                                          │
-    │                                          ▼ 实体为空？
-    │                                          │
-    │                                          ├─ 是 → 触发LLM
-    │                                          └─ 否 → 返回结果
-    │
-    ├─ 是 ─────────────────────────────────────────────────┐
-    │                                                       ▼
-    │                           ┌───────────────────────────────────────┐
-    │                           │    第三层：LLM（意图分类+实体提取）      │
-    │                           │  • _llm_classify_intent()              │
-    │                           │  • _llm_extract_entities()             │
-    │                           │  输出: intent + entities               │
-    │                           └───────────────────────────────────────┘
-    │
-    ▼
-结构化意图输出
-```
-
-**置信度计算规则（V2.2更新）**：
+**置信度计算规则**：
 ```python
 def _calculate_confidence(self, text: str, intent_level_1: str, intent_level_2: str) -> float:
     """
@@ -404,30 +347,6 @@ def _calculate_confidence(self, text: str, intent_level_1: str, intent_level_2: 
     """
 ```
 
-**LLM触发条件（V2.2更新）**：
-```python
-def _needs_llm_intent(self, text: str, intent_level_1: str, intent_level_2: str, confidence: float) -> bool:
-    """
-    判断是否需要LLM补充
-    
-    触发条件：
-    1. 一级意图未匹配到任何模式
-    2. 二级意图为"未知"
-    3. 置信度低于阈值（默认0.75）
-    """
-```
-```python
-ENTITY_PATTERNS = {
-    "order_id": r"(?:订单|order)[^0-9]*(\d{4,})",
-    "customer_id": r"(?:客户|customer)[^0-9]*(\d+)",
-    "product_card_id": r"(?:产品|product)[^0-9]*(\d+)",
-    "work_order_id": r"WO[-_]?\d{1,4}[-_]?\d{1,4}",
-    "work_type": r"(质检|审批|异常处理|退款|调拨|质量检验|生产跟踪|...)",
-    "issue_type": r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他)",
-    # ... 更多模式
-}
-```
-
 ### 3.3 ExecutorAgent（调度员Agent）
 
 **文件位置**: `supply_chain_agent/agents/executor.py`
@@ -439,31 +358,7 @@ ENTITY_PATTERNS = {
 - 熔断保护
 - 参数验证
 
-**任务分类定义（V2.1新增）**：
-```python
-# 一级任务分类
-LEVEL_1_TASKS = {
-    "信息查询": "查询客户、订单、产品、物流等信息",
-    "工单管理": "创建和审批工单",
-    "异常上报": "上报供应链过程中的问题"
-}
-
-# 二级任务分类 (基于MCP工具)
-LEVEL_2_TASKS = {
-    "客户查询": {"tool": "query_customer", "level1": "信息查询"},
-    "客户订单查询": {"tool": "query_customer_orders", "level1": "信息查询"},
-    "订单查询": {"tool": "query_order", "level1": "信息查询"},
-    "订单明细查询": {"tool": "query_order_items", "level1": "信息查询"},
-    "产品查询": {"tool": "query_product", "level1": "信息查询"},
-    "物流查询": {"tool": "query_shipment", "level1": "信息查询"},
-    "客户统计查询": {"tool": "query_customer_statistics", "level1": "信息查询"},
-    "创建工单": {"tool": "create_work_order", "level1": "工单管理"},
-    "审批工单": {"tool": "approve_work_order", "level1": "工单管理"},
-    "上报问题": {"tool": "report_issue", "level1": "异常上报"},
-}
-```
-
-**MCP工具参数定义（V2.1新增）**：
+**MCP工具参数定义**：
 ```python
 TOOL_PARAMS = {
     "query_customer": {"required": ["customer_id"], "optional": []},
@@ -473,13 +368,14 @@ TOOL_PARAMS = {
     "query_product": {"required": ["product_card_id"], "optional": []},
     "query_shipment": {"required": ["order_id"], "optional": []},
     "query_customer_statistics": {"required": ["customer_id"], "optional": []},
+    "query_work_order": {"required": ["work_order_id"], "optional": []},
     "create_work_order": {"required": ["work_type", "description"], "optional": ["priority", "order_id", "assigned_to"]},
     "approve_work_order": {"required": ["work_order_id", "action"], "optional": ["comment", "approver"]},
     "report_issue": {"required": ["issue_type", "description"], "optional": ["urgency", "affected_order", "reported_by"]},
 }
 ```
 
-**有效值定义（来自MCP Server）**：
+**有效值定义**：
 ```python
 VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
 VALID_PRIORITIES = ["高", "中", "低"]
@@ -488,17 +384,22 @@ VALID_URGENCIES = ["高", "中", "低"]
 VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 ```
 
-**执行流程**：
+**链式执行模式**：
 ```python
-async def execute_task(self, task_name: str, extracted_slots: Dict) -> Dict:
+async def execute_plan_with_llm_feedback(
+    self,
+    execution_plan: List[str],
+    initial_slots: Dict[str, Any],
+    intent: Dict[str, Any]
+) -> Dict[str, Any]:
     """
-    1. 映射任务到工具
-    2. 构建参数（过滤None值）
-    3. 验证参数完整性
-    4. 检查熔断器状态
-    5. 执行工具调用
-    6. 处理重试逻辑
-    7. 记录执行历史
+    执行工具计划，每一步都将结果发送给LLM解析获取下一步工具的入参。
+    
+    流程：
+    1. 依次执行每个工具
+    2. 每执行完一个工具，将执行结果发送给LLM解析
+    3. LLM输出下一步工具执行的入参
+    4. 直至执行计划的所有工具执行完毕
     """
 ```
 
@@ -529,7 +430,29 @@ AUDIT_RULES = [
 3. **跨结果一致性**：多个工具结果是否一致
 4. **业务逻辑验证**：是否符合业务规则
 
-### 3.5 BERT NER模块（V2.2更新）
+### 3.5 LLMClient（LLM客户端）
+
+**文件位置**: `supply_chain_agent/agents/llm_client.py`
+
+**支持的LLM提供商**：
+- **智谱AI (ZhipuClient)**：默认使用GLM-4.7模型
+- **OpenAI兼容API (OpenAIClient)**：支持自定义模型
+
+**核心方法**：
+```python
+class LLMClient(ABC):
+    @abstractmethod
+    async def generate(self, prompt: str) -> str:
+        """生成文本响应"""
+        pass
+
+    @abstractmethod
+    async def generate_json(self, prompt: str, schema: Optional[Dict] = None) -> Dict:
+        """生成JSON格式响应"""
+        pass
+```
+
+### 3.6 BERT NER模块
 
 **文件位置**: `supply_chain_agent/nlp/bert_ner.py`
 
@@ -539,68 +462,26 @@ AUDIT_RULES = [
 - **大小**: ~393MB
 - **设备**: 支持GPU加速
 
-**在三层架构中的定位**：
-- **第二层**：实体提取（仅当规则引擎命中且BERT模型可用时执行）
-- 如果BERT NER不可用或未提取到实体，则触发第三层LLM
-
-**核心功能**：
+**实体类型定义**：
 ```python
-class BertNERModel:
-    def __init__(self, model_path: str, use_bert: bool = True):
-        """
-        初始化BERT NER模型
-        - use_bert=True: 使用BERT语义理解
-        - use_bert=False: 仅使用规则提取（更快）
-        """
-    
-    def extract_entities(self, text: str) -> List[Entity]:
-        """
-        混合实体提取：
-        1. 规则提取（快速、准确）
-        2. BERT语义提取（理解上下文）
-        """
-    
-    def extract_for_intent(self, text: str, intent_level_1: str) -> List[Dict]:
-        """
-        针对特定意图的实体提取，优先返回相关实体类型
-        """
+ENTITY_LABELS = [
+    "O",        # 非实体
+    "B-ORDER",  # 订单号开始
+    "I-ORDER",  # 订单号内部
+    "B-CUSTOMER",  # 客户ID开始
+    "I-CUSTOMER",  # 客户ID内部
+    "B-PRODUCT",   # 产品ID开始
+    "I-PRODUCT",   # 产品ID内部
+    "B-WORKORDER", # 工单号开始
+    "I-WORKORDER", # 工单号内部
+    "B-AMOUNT",    # 金额开始
+    "I-AMOUNT",    # 金额内部
+    "B-DATE",      # 日期开始
+    "I-DATE",      # 日期内部
+]
 ```
 
-**ParserAgent中的调用方式**：
-```python
-def _extract_entities_with_ner(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
-    """
-    使用BERT NER提取实体（第二层）
-    
-    如果BERT NER不可用，返回空列表，
-    由parse_intent()检测后触发LLM补充
-    """
-    entities = []
-    
-    if self._bert_ner_available and self._bert_ner:
-        try:
-            bert_entities = self._bert_ner.extract_for_intent(text, intent_level_1)
-            entities.extend(bert_entities)
-        except Exception as e:
-            print(f"⚠️ BERT NER failed: {e}")
-    
-    return entities
-```
-
-**规则库定义**：
-```python
-rules = {
-    "order_id": [r"(?:订单|order)[^0-9]*(\d{4,})"],
-    "customer_id": [r"(?:客户|customer)[^0-9]*(\d+)"],
-    "product_card_id": [r"(?:产品|product)[^0-9]*(\d+)"],
-    "work_order_id": [r"WO[-_]?\d{1,4}[-_]?\d{1,4}"],
-    "issue_type": [r"(物流延迟|库存异常|质量缺陷|数据错误|客户投诉|其他)"],
-    "work_type": [r"(审批|异常处理|退款|调拨|质检|其他)"],
-    # ...
-}
-```
-
-### 3.6 ReportGenerator（报告生成器）
+### 3.7 ReportGenerator（报告生成器）
 
 **文件位置**: `supply_chain_agent/agents/report_generator.py`
 
@@ -608,6 +489,7 @@ rules = {
 - 生成结构化报告
 - 构建多模态响应卡片
 - 格式化输出
+- 降级响应生成
 
 **响应卡片结构**：
 ```python
@@ -624,38 +506,6 @@ rules = {
     ]
 }
 ```
-
-### 3.7 RetryManager（重试管理器）
-
-**文件位置**: `supply_chain_agent/agents/retry_manager.py`
-
-**核心功能**：
-- 多种重试策略（固定延迟、指数退避、随机抖动、自适应）
-- 熔断器模式
-- 错误分类与处理
-
-**重试策略**：
-```python
-class RetryStrategyType(Enum):
-    FIXED_DELAY = "fixed_delay"           # 固定延迟
-    EXPONENTIAL_BACKOFF = "exponential"   # 指数退避
-    RANDOM_JITTER = "random_jitter"       # 随机抖动
-    ADAPTIVE = "adaptive"                 # 自适应
-```
-
-**熔断器状态机**：
-```python
-class CircuitBreakerState(Enum):
-    CLOSED = "closed"      # 正常服务
-    OPEN = "open"          # 拒绝请求
-    HALF_OPEN = "half_open" # 尝试恢复
-```
-
-**错误分类**：
-- LOW: 可自动恢复的临时错误
-- MEDIUM: 需要人工干预的错误
-- HIGH: 系统级错误
-- CRITICAL: 服务不可用
 
 ---
 
@@ -690,14 +540,11 @@ llm_temperature: float = 0.7
 llm_max_tokens: int = 65536
 ```
 
-**支持的LLM提供商**：
-- 智谱AI (ZhipuClient)
-- OpenAI兼容API (OpenAIClient)
-
 **LLM使用场景**：
 1. 意图识别（模糊输入处理）
 2. 实体提取（补充规则无法识别的实体）
 3. 降级响应生成（工具不可用时）
+4. 链式执行参数解析
 
 ### 4.3 前端技术栈
 
@@ -720,13 +567,6 @@ llm_max_tokens: int = 65536
 | **SQLite** | 关系存储 | 业务数据、工单记录、实体映射、降级模板、配置 |
 | **ChromaDB** | 向量存储 | SOP 文档 (从 dataset/SOPData/ 加载) |
 | **JSON文件** | 检查点存储 | LangGraph状态持久化 |
-
-**数据源**: `/root/Supply-Chain-Agent/dataset/`
-- 业务数据: `BusinessData/DataCoSupplyChainDataset.csv`
-- SOP 文档: `SOPData/*.md`
-- 实体映射: `OtherData/EntityMapping.csv`
-- 降级模板: `OtherData/FallbackResponseTemplate.csv`
-- 配置文件: `OtherData/config.yaml`
 
 ---
 
@@ -763,6 +603,11 @@ class AgentState(TypedDict):
     error_count: int
     last_error: Optional[str]
     circuit_breakers: Dict[str, Dict[str, Any]]
+    
+    # 错误代码和模板参数
+    error_code: Optional[str]
+    error_template_params: Dict[str, Any]
+    from_error_handler: bool
     
     # 最终输出
     final_report: Optional[Dict[str, Any]]
@@ -828,32 +673,6 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
     }
 ```
 
-### 5.4 完整处理流程示例
-
-**用户输入**: "订单77202的物流到哪了"
-
-```
-1. [parse_input] 
-   → 意图识别: 信息查询/物流查询
-   → 实体提取: {order_id: "77202"}
-   → 缺失槽位: []
-
-2. [plan_task]
-   → 执行计划: ["query_shipment"]
-
-3. [execute_task] - query_shipment
-   → 结果: {order_id: 77202, shipping_mode: "Standard Class", status_description: "已于2/3/2018 22:56发货，实际运输3天，无延迟风险。"}
-
-4. [audit]
-   → 审计通过: True
-   → 问题: []
-   → 警告: []
-
-5. [generate_report]
-   → 响应: "订单 77202 物流状态: 已于2/3/2018 22:56发货，实际运输3天，无延迟风险。"
-   → 工具使用: ["query_shipment"]
-```
-
 ---
 
 ## 6. 记忆系统设计
@@ -888,11 +707,6 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**数据存储位置**:
-- 向量存储: `supply_chain_agent/data/vector_store/`
-- 记忆数据库: `supply_chain_agent/data/agent_memory.db`
-- 检查点目录: `supply_chain_agent/data/checkpoints/`
-
 ### 6.2 ShortTermMemory实现
 
 **文件位置**: `supply_chain_agent/memory/vector_store.py`
@@ -914,22 +728,17 @@ class ShortTermMemory:
         """获取最近的记忆项"""
 ```
 
-**特点**:
-- 纯内存存储，不持久化
-- 窗口大小默认20条
-- 支持按Agent/Action分组摘要
-
 ### 6.3 LongTermMemory实现
 
 **文件位置**: `supply_chain_agent/memory/vector_store.py`
 
 #### ChromaDB向量存储
 
-| 集合名称 | 用途 | 数据来源 | 当前记录数 |
-|----------|------|----------|------------|
-| `sop_manual` | 标准操作流程 | `dataset/SOPData/*.md` | 7条 |
-| `faq` | 常见问题解答 | 内置 | 3条 |
-| `knowledge_base` | 知识库(备用) | 运行时添加 | 0条 |
+| 集合名称 | 用途 | 数据来源 |
+|----------|------|----------|
+| `sop_manual` | 标准操作流程 | `dataset/SOPData/*.md` |
+| `faq` | 常见问题解答 | 内置 |
+| `knowledge_base` | 知识库(备用) | 运行时添加 |
 
 #### SQLite记忆数据库
 
@@ -941,152 +750,11 @@ class ShortTermMemory:
 | `tool_usage_stats` | 工具使用统计 | 成功/失败次数、耗时 |
 | `work_order_records` | 工单处理记录 | 完整处理流程记录 |
 
-**表结构详情**:
-
-```sql
--- 记忆项表
-CREATE TABLE memory_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    memory_type TEXT NOT NULL,      -- short_term/working/long_term
-    content TEXT NOT NULL,          -- 记忆内容 (JSON)
-    embedding_id TEXT,              -- 向量存储关联ID
-    tags TEXT,                      -- 标签 (JSON数组)
-    importance REAL,                -- 重要度 (0.0-1.0)
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    accessed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 工具使用统计表
-CREATE TABLE tool_usage_stats (
-    tool_name TEXT PRIMARY KEY,
-    success_count INTEGER DEFAULT 0,
-    failure_count INTEGER DEFAULT 0,
-    total_time_ms INTEGER DEFAULT 0,
-    last_used DATETIME
-);
-
--- 工单处理记录表
-CREATE TABLE work_order_records (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id TEXT NOT NULL,
-    intent_type TEXT NOT NULL,
-    intent_subtype TEXT,
-    entities TEXT,                  -- 提取的实体 (JSON)
-    tool_results TEXT,              -- 工具调用结果 (JSON)
-    audit_results TEXT,             -- 审计结果 (JSON)
-    final_report TEXT,              -- 最终报告 (JSON)
-    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    success BOOLEAN,
-    error_message TEXT
-);
-```
-
-#### 主要方法
-
-```python
-class LongTermMemory:
-    def search_sop(self, query: str, limit: int = 2) -> List[Dict]:
-        """搜索SOP手册"""
-        
-    def search_faq(self, query: str, limit: int = 3) -> List[Dict]:
-        """搜索FAQ"""
-        
-    def record_work_order(self, order_id, intent_type, entities, 
-                         tool_results, audit_results, final_report, success):
-        """记录工单处理过程"""
-        
-    def load_sop_documents(self, sop_dir: str) -> int:
-        """从目录加载SOP文档到向量存储"""
-```
-
-### 6.4 检查点管理
-
-**文件位置**: `supply_chain_agent/memory/checkpoint.py`
-
-```python
-class CheckpointManager:
-    def __init__(self, checkpoint_dir: str = "./supply_chain_agent/data/checkpoints"):
-        self.checkpoint_dir = checkpoint_dir
-    
-    def save_checkpoint(self, state: Dict, checkpoint_id: str, metadata: Dict = None):
-        """保存状态检查点到JSON文件"""
-        
-    def load_checkpoint(self, checkpoint_id: str) -> Optional[Dict]:
-        """加载检查点"""
-        
-    def list_checkpoints(self, limit: int = 10) -> List[Dict]:
-        """列出最近的检查点"""
-        
-    def cleanup_old_checkpoints(self, max_age_hours: int = 24):
-        """清理过期检查点"""
-        
-    def get_stats(self) -> Dict[str, Any]:
-        """获取检查点统计信息"""
-```
-
-**检查点文件格式**:
-```json
-{
-    "state": { ... },
-    "metadata": { ... },
-    "timestamp": 1716451200.0,
-    "timestamp_iso": "2024-05-23T10:00:00",
-    "checkpoint_id": "abc123"
-}
-```
-
-### 6.5 MemoryManager统一接口
-
-**文件位置**: `supply_chain_agent/memory/vector_store.py`
-
-```python
-class MemoryManager:
-    """管理三层记忆的统一接口"""
-    
-    def __init__(self, load_sop_on_init: bool = True):
-        self.short_term = ShortTermMemory(window_size=20)
-        self.long_term = LongTermMemory(...)
-    
-    def retrieve_relevant_knowledge(self, query: str, intent_type: str) -> Dict:
-        """检索相关知识 (SOP + FAQ)"""
-        return {
-            "sops": self.long_term.search_sop(query, limit=2),
-            "faqs": self.long_term.search_faq(query, limit=3)
-        }
-    
-    def format_knowledge_for_prompt(self, knowledge: Dict) -> str:
-        """格式化知识供LLM使用"""
-    
-    def record_agent_action(self, agent: str, action: str, details: Dict):
-        """记录Agent操作到短期记忆"""
-
-# 全局单例
-memory_manager = MemoryManager()
-```
-
-### 6.6 知识检索器
-
-**文件位置**: `supply_chain_agent/memory/knowledge_retriever.py`
-
-用于降级响应时的知识检索：
-
-```python
-class KnowledgeRetriever:
-    async def search(self, query: str, top_k: int = 3) -> List[Dict]:
-        """搜索知识库"""
-    
-    async def search_sop(self, query: str, top_k: int = 2) -> List[Dict]:
-        """搜索SOP"""
-    
-    async def search_faq(self, query: str, top_k: int = 2) -> List[Dict]:
-        """搜索FAQ"""
-```
-
 ---
 
 ## 7. MCP工具系统
 
-### 7.1 工具定义（V2.1更新）
+### 7.1 工具定义
 
 **文件位置**: `supply_chain_agent/tools/server.py`
 
@@ -1101,6 +769,7 @@ class KnowledgeRetriever:
 | `query_product` | 查询产品信息 | product_card_id | - |
 | `query_shipment` | 查询物流信息 | order_id | - |
 | `query_customer_statistics` | 查询客户统计 | customer_id | - |
+| `query_work_order` | 查询工单详情 | work_order_id | - |
 
 **工单管理类工具**：
 
@@ -1134,46 +803,7 @@ VALID_URGENCIES = ["高", "中", "低"]
 VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 ```
 
-### 7.3 工具实现示例
-
-```python
-@self.mcp.tool()
-def query_order(order_id: int) -> Dict[str, Any]:
-    """根据订单ID查询订单头详细信息"""
-    order = get_order_by_id(order_id)
-    if not order:
-        return MCPError(code=404, message=f"订单 {order_id} 不存在").to_dict()
-    
-    return {
-        "order_id": order.get("order_id"),
-        "customer_id": order.get("customer_id"),
-        "order_date": order.get("order_date"),
-        "order_status": order.get("order_status"),
-        "delivery_status": order.get("delivery_status"),
-        # ...
-    }
-```
-
-### 7.4 审批工具的特殊处理
-
-```python
-@self.mcp.tool()
-def approve_work_order(work_order_id: str, action: str, comment: str = "", approver: str = "Agent System"):
-    """
-    IMPORTANT: 此工具需要验证工单状态
-    - 仅 '待处理' 或 '待审批' 状态可审批
-    - action: approve/reject/escalate
-    """
-    # 验证action
-    if action not in ["approve", "reject", "escalate"]:
-        return MCPError(code=422, message=f"无效的审批动作").to_dict()
-    
-    # 执行审批
-    updated_work_order = _approve_work_order_db(...)
-    return {"success": True, "work_order": updated_work_order}
-```
-
-### 7.5 工具客户端熔断机制
+### 7.3 工具客户端熔断机制
 
 **文件位置**: `supply_chain_agent/tools/client.py`
 
@@ -1192,7 +822,7 @@ class ToolClient:
         return not breaker.is_open
 ```
 
-### 7.6 降级响应机制
+### 7.4 降级响应机制
 
 当工具不可用时，使用知识库+LLM生成合理提示：
 
@@ -1204,75 +834,12 @@ async def _fallback_response(self, user_input: str, intent_info: Dict, error: st
     2. LLM生成友好提示
     3. 明确标记不包含真实数据
     """
-    # 知识库检索
-    knowledge_result = await self.knowledge_retriever.search(user_input)
-    
-    # LLM生成提示
-    llm_message = await self.llm_client.generate(FALLBACK_RESPONSE_PROMPT)
-    
     return {
         "fallback": True,
         "message": llm_message,
         "data_available": False  # 明确标记无真实数据
     }
 ```
-
-### 7.7 数据架构
-
-**数据来源**: `/root/Supply-Chain-Agent/dataset/` 目录
-
-**数据架构遵循**: `dataset/DATA_ARCHITECTURE.md`
-
-#### 核心数据层
-
-| 数据类型 | 存储位置 | 来源文件 |
-|----------|----------|----------|
-| **业务数据** | SQLite 数据库 | `dataset/BusinessData/DataCoSupplyChainDataset.csv` |
-| **SOP 文档** | ChromaDB 向量存储 | `dataset/SOPData/*.md` |
-| **实体映射** | SQLite 数据库 | `dataset/OtherData/EntityMapping.csv` |
-| **降级模板** | SQLite 数据库 | `dataset/OtherData/FallbackResponseTemplate.csv` |
-| **Agent 配置** | SQLite 数据库 | `dataset/OtherData/config.yaml` |
-
-#### 数据库表结构
-
-**核心业务表**:
-- `customers`: 客户信息 (3,486 条记录)
-- `orders`: 订单信息 (3,861 条记录)
-- `order_items`: 订单明细 (5,000 条记录)
-- `products`: 产品信息 (94 条记录)
-- `shipping`: 物流信息 (5,000 条记录)
-- `categories`: 产品分类 (42 条记录)
-- `departments`: 部门信息 (11 条记录)
-
-**新增业务表**:
-- `work_orders`: 工单管理
-- `issues`: 问题报告
-- `entity_mappings`: 实体同义词映射 (50 条记录)
-- `fallback_templates`: 降级响应模板 (23 条记录)
-- `agent_config`: Agent 配置参数 (10 条配置项)
-
-#### 向量存储内容
-
-**SOP 文档** (7 个文档块):
-- `Supply Chain Business Approval Management Measures.md`: 供应链业务审批管理办法
-- `Customer Classification and Performance Quota Management Measures.md`: 客商分级与履约额度管理办法
-
-位于 `dataset/SOPData/` 目录。
-
-#### 数据初始化
-
-```bash
-# 初始化所有数据
-python -m supply_chain_agent.data.init_data
-
-# 仅验证数据
-python -m supply_chain_agent.data.init_data --verify
-
-# 仅加载 SOP 文档
-python -m supply_chain_agent.data.init_data --sop-only
-```
-
-**注意**: 后端不使用任何模拟数据，所有数据来源于数据库。前端 mock 模式数据保留在 `frontend/src/api/mock/chatMock.ts`。
 
 ---
 
@@ -1301,80 +868,7 @@ python -m supply_chain_agent.data.init_data --sop-only
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### 8.2 主要组件
-
-**布局组件**：
-- `AppLayout`: 主布局框架
-- `SidebarMenu`: 侧边导航菜单
-- `FloatingNav`: 浮动导航栏
-
-**对话组件**：
-- `ChatCard`: 对话卡片
-- `ChatMessage`: 消息组件
-- `ChatInput`: 输入框组件
-
-**Agent组件**：
-- `AgentEventFlow`: Agent事件流展示
-- `ToolCallCard`: 工具调用卡片
-
-### 8.3 状态管理
-
-**conversationStore**：
-```typescript
-interface ConversationState {
-  conversations: Conversation[];
-  currentConversation: Conversation | null;
-  messages: Message[];
-  isLoading: boolean;
-  // actions
-  addMessage: (message: Message) => void;
-  sendMessage: (content: string) => Promise<void>;
-}
-```
-
-**toolStore**：
-```typescript
-interface ToolState {
-  tools: Tool[];
-  selectedTool: Tool | null;
-  toolResults: Record<string, any>;
-  // actions
-  fetchTools: () => Promise<void>;
-  testTool: (toolName: string, params: any) => Promise<void>;
-}
-```
-
-### 8.4 WebSocket集成
-
-**文件位置**: `supply_chain_agent/frontend/src/hooks/useWebSocket.ts`
-
-```typescript
-const useWebSocket = (url: string) => {
-  const [socket, setSocket] = useState<WebSocket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  
-  const sendMessage = (data: any) => {
-    socket?.send(JSON.stringify(data));
-  };
-  
-  // 处理Agent事件流
-  const onMessage = (event: MessageEvent) => {
-    const data = JSON.parse(event.data);
-    switch (data.type) {
-      case 'step_start':
-        // 处理步骤开始
-      case 'tool_call':
-        // 处理工具调用
-      case 'step_end':
-        // 处理步骤结束
-      case 'complete':
-        // 处理完成
-    }
-  };
-};
-```
-
-### 8.5 页面路由
+### 8.2 页面路由
 
 | 路由 | 页面 | 描述 |
 |------|------|------|
@@ -1421,10 +915,12 @@ class Settings(BaseSettings):
     llm_model: str = "glm-4.7"
     llm_api_key: str = "..."
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 65536
     
     # 意图识别配置
     intent_rule_first: bool = True  # 优先规则快速路径
-    intent_confidence_threshold: float = 0.7
+    intent_confidence_threshold: float = 0.75
     
     # 降级策略
     fallback_strategy: str = "knowledge_first"
@@ -1436,9 +932,10 @@ class Settings(BaseSettings):
     # 记忆配置
     memory_window_size: int = 20
     vector_store_path: str = "./supply_chain_agent/data/vector_store"
+    sqlite_db_path: str = "./supply_chain_agent/data/agent_memory.db"
 
     # 熔断器配置
-    circuit_breaker_failures: int = 3
+    circuit_breaker_failures: int = 5
     circuit_breaker_reset_timeout: int = 300
 
     # Web配置
@@ -1454,35 +951,6 @@ class Settings(BaseSettings):
 | Web | `python -m supply_chain_agent --mode web --port 8000` | 业务使用 |
 | MCP | `python -m supply_chain_agent --mode mcp --mcp-port 8001` | 工具服务 |
 
-### 10.3 Docker部署
-
-```dockerfile
-FROM python:3.9-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-ENV PORT=8000
-EXPOSE 8000
-CMD ["python", "-m", "supply_chain_agent", "--mode", "web", "--port", "8000"]
-```
-
-### 10.4 Docker Compose
-
-```yaml
-version: '3.8'
-services:
-  supply-chain-agent:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    volumes:
-      - ./data:/data
-    restart: unless-stopped
-```
-
 ---
 
 ## 11. 性能指标分析
@@ -1496,16 +964,7 @@ services:
 | 用户采纳率 | > 40% | 61.2% | ✅ 达标 |
 | 工具可用率 | > 95% | 96.0% | ✅ 达标 |
 
-### 11.2 性能优化措施
-
-1. **规则优先策略**: 意图识别优先使用规则引擎，降低LLM调用频率
-2. **BERT NER增强**: 中文实体识别准确率提升
-3. **熔断器保护**: 防止工具故障级联扩散
-4. **滑动窗口**: 控制上下文窗口大小，防止Token溢出
-5. **并发控制**: ExecutorAgent支持并发工具调用
-6. **检查点持久化**: LangGraph状态持久化，支持断点恢复
-
-### 11.3 资源消耗
+### 11.2 资源消耗
 
 | 资源 | 最小配置 | 推荐配置 |
 |------|----------|----------|
@@ -1543,13 +1002,6 @@ services:
 3. **结构化日志**: 完整的日志记录和监控指标
 4. **检查点管理**: LangGraph状态持久化，支持断点恢复
 
-### 12.4 产品设计
-
-1. **三级意图分类**: 一级意图→二级意图→槽位，层次清晰
-2. **澄清循环控制**: 最多3次追问，避免无限循环
-3. **多模态响应**: 响应卡片包含总结、详情、操作建议
-4. **四维评估体系**: 效果、效率、体验、稳定性四维评估
-
 ---
 
 ## 13. 代码质量分析
@@ -1560,18 +1012,27 @@ services:
 - **清晰的目录结构**: 按功能分层组织
 - **完善的类型注解**: 使用TypedDict和Pydantic进行类型定义
 
-### 13.2 文档完整性
+### 13.2 代码统计
 
-- **README**: 完整的项目说明和使用指南
-- **PRD**: 详细的产品需求文档
-- **API文档**: 完整的REST API文档
-- **部署指南**: 详细的部署和运维文档
+| 模块 | 文件 | 代码行数 | 说明 |
+|------|------|----------|------|
+| Orchestrator | orchestrator.py | ~650 | 总控Agent |
+| Parser | parser.py | ~830 | 解析师Agent |
+| Executor | executor.py | ~1087 | 调度员Agent |
+| Auditor | auditor.py | ~334 | 审计员Agent |
+| Workflow | workflow.py | ~949 | LangGraph工作流 |
+| Memory | vector_store.py | ~666 | 记忆系统 |
+| App | app.py | ~1077 | FastAPI应用 |
+| Database | supply_chain_db.py | ~1426 | 数据库操作 |
+| MCP Server | server.py | ~754 | MCP工具服务 |
+| MCP Client | client.py | ~490 | 工具客户端 |
+| BERT NER | bert_ner.py | ~330 | NER模块 |
+| Config | config.py | ~148 | 配置管理 |
+| State | state.py | ~223 | 状态定义 |
+| Report Generator | report_generator.py | ~475 | 报告生成器 |
+| LLM Client | llm_client.py | ~205 | LLM客户端 |
 
-### 13.3 代码规范
-
-- **类型注解**: 全面使用Python类型注解
-- **文档字符串**: 关键函数都有docstring
-- **错误处理**: 完善的异常处理和日志记录
+**总计**: 约 ~7642 行核心代码
 
 ---
 
@@ -1598,13 +1059,6 @@ services:
 3. **OA系统集成**: 集成企业OA审批流程
 4. **认证授权**: 增加企业级认证授权
 
-### 14.4 AI能力增强
-
-1. **更强大的LLM**: 升级到更强的LLM模型
-2. **多模态理解**: 支持图片、文档等多模态输入
-3. **知识图谱**: 构建供应链知识图谱
-4. **主动推荐**: 基于历史数据的主动推荐
-
 ---
 
 ## 附录
@@ -1614,14 +1068,16 @@ services:
 | 文件 | 行数 | 描述 |
 |------|------|------|
 | orchestrator.py | ~650 | 总控Agent |
-| parser.py | ~700 | 解析师Agent |
-| executor.py | ~500 | 调度员Agent |
-| auditor.py | ~360 | 审计员Agent |
-| workflow.py | ~730 | LangGraph工作流 |
-| vector_store.py | ~960 | 记忆系统 |
-| app.py | ~1060 | FastAPI应用 |
-| retry_manager.py | ~580 | 重试管理器 |
-| bert_ner.py | ~280 | BERT NER模块 (新增) |
+| parser.py | ~830 | 解析师Agent |
+| executor.py | ~1087 | 调度员Agent |
+| auditor.py | ~334 | 审计员Agent |
+| workflow.py | ~949 | LangGraph工作流 |
+| vector_store.py | ~666 | 记忆系统 |
+| app.py | ~1077 | FastAPI应用 |
+| supply_chain_db.py | ~1426 | 数据库操作 |
+| server.py | ~754 | MCP服务器 |
+| client.py | ~490 | 工具客户端 |
+| bert_ner.py | ~330 | BERT NER模块 |
 
 ### B. 依赖清单
 
@@ -1629,6 +1085,7 @@ services:
 - langgraph>=0.2.0
 - langchain>=0.2.0
 - fastapi>=0.110.0
+- fastmcp>=0.1.0
 - chromadb>=0.5.0
 - pydantic>=2.0.0
 - transformers>=5.9.0
