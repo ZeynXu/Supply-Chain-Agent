@@ -238,7 +238,7 @@ class ExecutorAgent:
             print(f"⚠️ 加载 AGENT.md 失败: {e}")
             return ""
 
-    async def _generate_approval_plan_with_llm(self, intent: Dict[str, Any]) -> List[str]:
+    async def _generate_approval_plan_with_llm_original(self, intent: Dict[str, Any]) -> List[str]:
         """
         使用LLM根据AGENT.md生成审批工单的执行计划。
 
@@ -299,6 +299,90 @@ class ExecutorAgent:
             "query_order",
             "query_customer_statistics"
         ]
+
+    def _get_llm_client_for_skill(self):
+        """获取用于 skill 的 LLM 客户端"""
+        return ServiceContainer.get_llm_client()
+
+    async def _generate_approval_plan_with_skill(self, intent: Dict[str, Any]) -> List[str]:
+        """
+        使用 skill 生成审批工单执行计划
+
+        Args:
+            intent: 解析后的意图
+
+        Returns:
+            任务名称列表
+        """
+        llm_client = self._get_llm_client_for_skill()
+
+        # 提取实体信息
+        extracted_slots = intent.get("entities", [])
+        slot_dict = {}
+        for entity in extracted_slots:
+            if isinstance(entity, dict):
+                slot_dict[entity.get("type")] = entity.get("value")
+
+        # 使用 skill 上下文生成计划
+        result = await llm_client.generate_with_skill(
+            prompt="根据审批工单流程，生成执行计划。请输出 JSON 格式的任务列表。",
+            skill_name="approval_workflow",
+            additional_context={
+                "entities": slot_dict,
+                "intent": intent.get("intent_level_2", "")
+            }
+        )
+
+        # 解析 LLM 返回的任务列表
+        tasks = result.get("tasks", [])
+        task_names = [task.get("tool", "") for task in tasks if task.get("tool")]
+
+        print(f"📋 Skill 生成的执行计划: {task_names}")
+
+        return task_names
+
+    async def _generate_approval_plan_with_prompt(self, intent: Dict[str, Any]) -> List[str]:
+        """
+        使用 prompt 模板生成审批工单执行计划（fallback）
+
+        Args:
+            intent: 解析后的意图
+
+        Returns:
+            任务名称列表
+        """
+        # 使用现有的 prompt 模板方法
+        return await self._generate_approval_plan_with_llm_original(intent)
+
+    async def _generate_approval_plan_with_llm(self, intent: Dict[str, Any]) -> List[str]:
+        """
+        使用 LLM 根据 AGENT.md 生成审批工单的执行计划。
+
+        支持两种模式：
+        1. Skill 模式：使用 skill 文件作为上下文
+        2. Prompt 模式：使用 prompt 模板（fallback）
+
+        Args:
+            intent: 解析后的意图，包含 intent_level_1, intent_level_2, entities
+
+        Returns:
+            任务名称列表
+        """
+        from supply_chain_agent.config import settings
+
+        # 检查是否启用 skill 模式
+        if settings.use_skill_for_approval:
+            try:
+                return await self._generate_approval_plan_with_skill(intent)
+            except Exception as e:
+                print(f"⚠️ Skill 模式失败: {e}")
+                if settings.skill_fallback_to_prompt:
+                    print("⬇️ 降级到 prompt 模式...")
+                    return await self._generate_approval_plan_with_prompt(intent)
+                raise
+
+        # 使用 prompt 模式
+        return await self._generate_approval_plan_with_prompt(intent)
 
     def get_available_tools(self) -> Dict[str, Any]:
         """获取所有可用工具及其参数定义"""
