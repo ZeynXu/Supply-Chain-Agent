@@ -422,6 +422,46 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 - **处理流程**: 意图识别→异常上报 → 实体提取(issue_type=物流延迟, order_id=75939) → 调用report_issue工具 → 响应生成
 - **输出结果**: "已上报物流延迟异常，工单号ISS-2026-XXX，已通知相关责任人"
 
+## Skill 系统
+
+Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采用渐进式披露（Progressive Disclosure）的上下文工程技术。
+
+### 审批工单 Skill
+
+当检测到审批工单意图时，系统自动加载 `approval_workflow` skill：
+
+- **位置**: `supply_chain_agent/skills/approval_workflow/`
+- **触发条件**: `intent_level_2 = "审批工单"`
+- **功能**: 指导 LLM 生成执行计划、提取参数、执行工具
+
+### Skill 结构
+
+```
+skills/
+└── approval_workflow/
+    ├── SKILL.md              # 主 skill 文件
+    └── procedures/           # 渐进式披露子流程
+        ├── plan_generation.md
+        ├── param_extraction.md
+        └── tool_execution.md
+```
+
+### 配置选项
+
+通过环境变量配置 Skill 行为：
+
+| 环境变量 | 默认值 | 说明 |
+|---------|-------|------|
+| `SCA_USE_SKILL_FOR_APPROVAL` | `true` | 启用 skill 模式处理审批工单 |
+| `SCA_SKILL_FALLBACK_TO_PROMPT` | `true` | skill 加载失败时降级到 prompt |
+
+### 工作原理
+
+1. **意图识别**: ParserAgent 识别用户意图为"审批工单"
+2. **Skill 加载**: ExecutorAgent 通过 LLMClient 加载 approval_workflow skill
+3. **执行计划生成**: LLM 根据 skill 指导生成执行计划
+4. **Fallback 机制**: 如果 skill 加载失败，自动降级到 prompt 模式
+
 ## 🏗️ 架构设计
 
 ### 📊 代码规模统计
