@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 65536
 
+    # Skill 配置
+    use_skill_for_approval: bool = True  # 启用 skill 模式处理审批工单
+    skill_fallback_to_prompt: bool = True  # skill 加载失败时降级到 prompt
+
 
     # 意图识别配置
     intent_rule_first: bool = True  # 优先使用规则快速路径
