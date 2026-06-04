@@ -345,137 +345,38 @@ class OrchestratorAgent:
             return str(second_item), []
         return str(interrupt_info) if interrupt_info else "请提供更多信息", []
 
-                ServiceContainer.get_memory_manager().record_agent_action(
-                    agent_name="workflow",
-                    action="interrupt_for_clarification",
-                    details={
-                        "prompt": clarification_prompt,
-                        "missing_slots": missing_slots,
-                        "source": "clarify_node"
-                    },
-                    importance=0.6
-                )
+    def _handle_interrupt(self, final_state: dict) -> dict:
+        """Handle workflow interrupt for clarification."""
+        from supply_chain_agent.core.workflow.interrupt import WorkflowInterrupt
 
-                return {
-                    "response": clarification_prompt,
-                    "waiting_for_input": True,
-                    "clarification_prompt": clarification_prompt,
-                    "missing_slots": missing_slots,
-                    "thread_id": self.current_thread_id
-                }
+        interrupt_info = final_state.get("interrupt")
+        if not interrupt_info:
+            return None
 
-            # Extract response from final state
-            response = self._extract_response(final_state)
+        print(f"⚠️ 工作流中断: {type(interrupt_info).__name__}")
 
-            ServiceContainer.get_memory_manager().record_agent_action(
-                agent_name="workflow",
-                action="completed",
-                details={
-                    "response_preview": response[:100] + "..." if len(response) > 100 else response,
-                    "has_response_card": final_state.get("response_card") is not None,
-                    "tool_results_keys": list(final_state.get("tool_results", {}).keys())
-                },
-                importance=0.8
-            )
+        # Extract clarification prompt and missing slots
+        clarification_prompt, missing_slots = self._extract_interrupt_info(interrupt_info)
 
-            return {
-                "response": response,
-                "waiting_for_input": False,
-                "thread_id": self.current_thread_id
-            }
+        # Record agent action
+        ServiceContainer.get_memory_manager().record_agent_action(
+            agent_name="workflow",
+            action="interrupt_for_clarification",
+            details={
+                "prompt": clarification_prompt,
+                "missing_slots": missing_slots,
+                "source": "clarify_node"
+            },
+            importance=0.6
+        )
 
-        # H6修复：区分异常类型
-        except RecoverableError as e:
-            # 可恢复错误 - 记录并尝试恢复
-            print(f"⚠️ 可恢复错误: {type(e).__name__}: {e}")
-
-            ServiceContainer.get_memory_manager().record_agent_action(
-                agent_name="workflow",
-                action="recoverable_error",
-                details={
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "fallback_used": True,
-                    "is_recoverable": True
-                },
-                importance=0.7
-            )
-
-            error_response = await self._handle_workflow_error(e, user_input)
-            return {
-                "response": error_response,
-                "waiting_for_input": False,
-                "error": str(e),
-                "is_recoverable": True
-            }
-        except UnrecoverableError as e:
-            # 不可恢复错误 - 直接返回错误信息
-            print(f"❌ 不可恢复错误: {type(e).__name__}: {e}")
-
-            ServiceContainer.get_memory_manager().record_agent_action(
-                agent_name="workflow",
-                action="unrecoverable_error",
-                details={
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "fallback_used": False,
-                    "is_recoverable": False
-                },
-                importance=0.9
-            )
-
-            return {
-                "response": f"抱歉，系统无法处理您的请求。错误信息：{e}",
-                "waiting_for_input": False,
-                "error": str(e),
-                "is_recoverable": False
-            }
-        except SupplyChainError as e:
-            # 其他业务异常 - 记录完整上下文
-            print(f"❌ 业务错误: {type(e).__name__}: {e}")
-
-            ServiceContainer.get_memory_manager().record_agent_action(
-                agent_name="workflow",
-                action="business_error",
-                details={
-                    "error_type": type(e).__name__,
-                    "error_message": str(e),
-                    "original_error": str(e.original_error) if e.original_error else None,
-                    "context": e.context,
-                    "fallback_used": True
-                },
-                importance=0.8
-            )
-
-            error_response = await self._handle_workflow_error(e, user_input)
-            return {
-                "response": error_response,
-                "waiting_for_input": False,
-                "error": str(e)
-            }
-        except Exception as e:
-            # 未知异常 - 包装后处理
-            wrapped = wrap_exception(e, {"method": "process_with_callback", "user_input": user_input[:100]})
-            print(f"❌ 工作流执行错误: {type(wrapped).__name__}: {e}")
-
-            ServiceContainer.get_memory_manager().record_agent_action(
-                agent_name="workflow",
-                action="execution_error",
-                details={
-                    "error_type": type(wrapped).__name__,
-                    "error_message": str(e),
-                    "fallback_used": True,
-                    "is_recoverable": is_recoverable(wrapped)
-                },
-                importance=0.9
-            )
-
-            error_response = await self._handle_workflow_error(e, user_input)
-            return {
-                "response": error_response,
-                "waiting_for_input": False,
-                "error": str(e)
-            }
+        return {
+            "response": clarification_prompt,
+            "waiting_for_input": True,
+            "clarification_prompt": clarification_prompt,
+            "missing_slots": missing_slots,
+            "thread_id": self.current_thread_id
+        }
 
     async def process_simple(self, user_input: str) -> str:
         """

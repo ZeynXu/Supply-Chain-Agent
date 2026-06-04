@@ -7,7 +7,7 @@ Provides unified interface for different LLM providers:
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 import httpx
 import asyncio
@@ -249,6 +249,12 @@ class CachedLLMClient(LLMClient):
         self._cache_size = cache_size
         self._cache_hits = 0
         self._cache_misses = 0
+        # Skill 支持
+        try:
+            from supply_chain_agent.skills.base import SkillLoader
+            self._skill_loader = SkillLoader()
+        except ImportError:
+            self._skill_loader = None
 
     def _get_cached(self, key: str) -> Optional[str]:
         """从缓存获取"""
@@ -304,6 +310,81 @@ class CachedLLMClient(LLMClient):
             "misses": self._cache_misses,
             "hit_rate": hit_rate
         }
+
+    def load_skill(self, skill_name: str) -> str:
+        """
+        加载 skill 内容
+
+        Args:
+            skill_name: skill 名称
+
+        Returns:
+            skill 文件内容
+
+        Raises:
+            RuntimeError: skill loader 未初始化
+        """
+        if self._skill_loader is None:
+            raise RuntimeError("SkillLoader not initialized")
+        return self._skill_loader.load_skill(skill_name)
+
+    def _build_skill_prompt(
+        self,
+        skill_content: str,
+        prompt: str,
+        additional_context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        构建 skill 上下文 prompt
+
+        Args:
+            skill_content: skill 文件内容
+            prompt: 用户 prompt
+            additional_context: 额外上下文
+
+        Returns:
+            完整的 prompt
+        """
+        full_prompt = f"""## Skill 上下文
+
+{skill_content}
+
+## 用户请求
+
+{prompt}
+"""
+        if additional_context:
+            import json
+            full_prompt += f"""
+
+## 额外上下文
+
+```json
+{json.dumps(additional_context, ensure_ascii=False, indent=2)}
+```
+"""
+        return full_prompt
+
+    async def generate_with_skill(
+        self,
+        prompt: str,
+        skill_name: str,
+        additional_context: Optional[Dict[str, Any]] = None
+    ) -> Dict:
+        """
+        带 skill 上下文生成响应
+
+        Args:
+            prompt: 用户 prompt
+            skill_name: skill 名称
+            additional_context: 额外上下文
+
+        Returns:
+            JSON 格式的响应
+        """
+        skill_content = self.load_skill(skill_name)
+        full_prompt = self._build_skill_prompt(skill_content, prompt, additional_context)
+        return await self.generate_json(full_prompt)
 
 
 # 单例实例
