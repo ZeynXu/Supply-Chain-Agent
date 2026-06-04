@@ -5,12 +5,32 @@ Settings can be loaded from:
 1. Environment variables (with SCA_ prefix)
 2. .env file
 3. Database (agent_config table loaded from dataset/OtherData/config.yaml)
+
+M35修复：明确配置加载优先级
+==============================
+配置加载优先级（从高到低）：
+1. 环境变量（SCA_* 前缀）- 最高优先级，用于生产环境覆盖
+2. .env 文件 - 本地开发配置
+3. 数据库配置（agent_config表）- 默认值，可被上述覆盖
+4. 代码默认值 - 最低优先级
+
+注意：数据库配置通过 load_from_database() 加载，会覆盖代码默认值，
+但会被环境变量和 .env 文件覆盖。
 """
 
 import os
 from typing import Optional, Dict, Any
 
 from pydantic_settings import BaseSettings
+
+
+# 配置加载优先级常量
+CONFIG_PRIORITY = {
+    "env_var": 1,      # 最高优先级
+    "env_file": 2,     # 次高优先级
+    "database": 3,     # 数据库配置
+    "default": 4       # 代码默认值
+}
 
 
 class Settings(BaseSettings):
@@ -63,6 +83,33 @@ class Settings(BaseSettings):
     # Degradation configuration (from config.yaml)
     static_response_enabled: bool = True
     cache_fallback_enabled: bool = True
+
+    # L6修复：魔法数字常量化
+    # 记忆重要性默认值
+    default_importance: float = 0.7
+    importance_high: float = 0.9
+    importance_medium: float = 0.6
+    importance_low: float = 0.4
+
+    # 重试和循环限制
+    max_clarification_loops: int = 3
+    max_error_count: int = 3
+    max_resume_attempts: int = 5
+
+    # 历史和缓存限制
+    max_context_window: int = 20
+    max_execution_history: int = 100
+    max_intent_cache_size: int = 100
+
+    # 置信度阈值
+    confidence_high: float = 0.9
+    confidence_medium: float = 0.7
+    confidence_low: float = 0.5
+    confidence_threshold: float = 0.4
+
+    # 分页默认值
+    default_page_limit: int = 20
+    max_page_limit: int = 100
 
     # Web interface
     web_port: int = 8000
@@ -137,17 +184,30 @@ class Settings(BaseSettings):
                     self.cache_fallback_enabled = bool(deg["cache_fallback_enabled"])
                     loaded["cache_fallback_enabled"] = deg["cache_fallback_enabled"]
 
+            # M35修复：记录配置加载来源
+            if loaded:
+                print(f"[Config] 从数据库加载配置: {list(loaded.keys())}")
+
             return loaded
         except Exception as e:
             print(f"Warning: Could not load config from database: {e}")
             return {}
 
 
-# Load settings
+# Load settings (M35修复：记录配置加载来源)
 settings = Settings()
 
-# Try to load from database on import (silently)
+# 检查环境变量覆盖
+_env_overrides = []
+if settings.llm_api_key:
+    _env_overrides.append("llm_api_key")
+if settings.anthropic_api_key:
+    _env_overrides.append("anthropic_api_key")
+
+# Try to load from database on import
 try:
-    settings.load_from_database()
-except:
-    pass  # Database may not be initialized yet
+    _db_loaded = settings.load_from_database()
+    if _env_overrides:
+        print(f"[Config] 环境变量覆盖: {_env_overrides}")
+except Exception as e:
+    print(f"[Config] 数据库配置加载跳过: {e}")

@@ -11,7 +11,6 @@ import asyncio
 import json
 import time
 from typing import Dict, Any, Optional, Callable
-from dataclasses import dataclass
 from functools import wraps
 
 from supply_chain_agent.config import settings
@@ -25,21 +24,34 @@ try:
 except ImportError:
     FALLBACK_LLM_AVAILABLE = False
 
-
-@dataclass
-class CircuitBreaker:
-    """Circuit breaker for tool calls."""
-    failure_count: int = 0
-    last_failure_time: float = 0
-    is_open: bool = False
-    open_until: float = 0
+# 使用统一的熔断器实现（来自retry_manager）
+from supply_chain_agent.agents.retry_manager import CircuitBreaker, CircuitBreakerConfig
 
 
 class ToolClient:
     """Client for calling MCP tools using FastMCP client."""
 
+    # 工具名称常量（避免硬编码）
+    TOOLS = [
+        "query_customer",
+        "query_customer_orders",
+        "query_order",
+        "query_order_items",
+        "query_product",
+        "query_shipment",
+        "query_customer_statistics",
+        "create_work_order",
+        "approve_work_order",
+        "report_issue",
+    ]
+
     def __init__(self, base_url: str = None):
         self.base_url = base_url or f"http://{settings.mcp_server_host}:{settings.mcp_server_port}/mcp"
+        # 使用统一的熔断器配置
+        self._cb_config = CircuitBreakerConfig(
+            failure_threshold=settings.circuit_breaker_failures,
+            recovery_timeout_seconds=settings.circuit_breaker_reset_timeout
+        )
         self.circuit_breakers: Dict[str, CircuitBreaker] = {}
         # Use local MCPServer instance for direct calls
         self._server: Optional[Any] = None
@@ -47,6 +59,9 @@ class ToolClient:
         # LLM和知识库（用于降级响应）
         self._llm_client: Optional[LLMClient] = None
         self._knowledge_retriever: Optional[KnowledgeRetriever] = None
+
+        # 工具定义缓存（动态获取）
+        self._tool_definitions: Optional[Dict[str, Dict]] = None
 
     def _get_server(self):
         """Get or create local MCP server instance."""
@@ -72,54 +87,58 @@ class ToolClient:
             self._knowledge_retriever = get_knowledge_retriever()
         return self._knowledge_retriever
 
+    def get_tool_definitions(self) -> Dict[str, Dict]:
+        """
+        动态获取工具定义（从MCPServer获取，避免重复定义）。
+
+        Returns:
+            工具定义字典，key为工具名，value为定义信息
+        """
+        if self._tool_definitions is None:
+            server = self._get_server()
+            self._tool_definitions = {}
+
+            # 从MCP server获取工具列表
+            if hasattr(server.mcp, '_tools'):
+                for name, tool in server.mcp._tools.items():
+                    self._tool_definitions[name] = {
+                        "name": name,
+                        "description": tool.description if hasattr(tool, 'description') else "",
+                        "parameters": {}
+                    }
+
+        return self._tool_definitions
+
+    def list_tools(self) -> list[str]:
+        """获取可用工具列表"""
+        return self.TOOLS
+
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
 
-    def _check_circuit_breaker(self, tool_name: str) -> bool:
-        """Check if circuit breaker is open for a tool."""
+    def _get_circuit_breaker(self, tool_name: str) -> CircuitBreaker:
+        """获取或创建熔断器（使用统一实现）"""
         if tool_name not in self.circuit_breakers:
-            self.circuit_breakers[tool_name] = CircuitBreaker()
+            self.circuit_breakers[tool_name] = CircuitBreaker(tool_name, self._cb_config)
+        return self.circuit_breakers[tool_name]
 
-        breaker = self.circuit_breakers[tool_name]
-
-        # Reset breaker if it's been open long enough
-        if breaker.is_open and time.time() > breaker.open_until:
-            breaker.is_open = False
-            breaker.failure_count = 0
-            return True
-
-        # Check if breaker should be opened
-        if breaker.failure_count >= settings.circuit_breaker_failures:
-            if not breaker.is_open:
-                breaker.is_open = True
-                breaker.open_until = time.time() + settings.circuit_breaker_reset_timeout
-                print(f"⚠️  Circuit breaker opened for {tool_name} (will reset in {settings.circuit_breaker_reset_timeout}s)")
-            return False
-
-        return not breaker.is_open
+    def _check_circuit_breaker(self, tool_name: str) -> bool:
+        """Check if circuit breaker allows call for a tool."""
+        breaker = self._get_circuit_breaker(tool_name)
+        return breaker.is_call_allowed()
 
     def _record_failure(self, tool_name: str):
         """Record a failure for circuit breaker."""
-        if tool_name not in self.circuit_breakers:
-            self.circuit_breakers[tool_name] = CircuitBreaker()
-
-        breaker = self.circuit_breakers[tool_name]
-        breaker.failure_count += 1
-        breaker.last_failure_time = time.time()
-
-        # Check if we should open the breaker
-        if breaker.failure_count >= settings.circuit_breaker_failures:
-            breaker.is_open = True
-            breaker.open_until = time.time() + settings.circuit_breaker_reset_timeout
+        breaker = self._get_circuit_breaker(tool_name)
+        breaker.record_failure()
 
     def _record_success(self, tool_name: str):
         """Record a success for circuit breaker."""
-        if tool_name in self.circuit_breakers:
-            self.circuit_breakers[tool_name].failure_count = 0
-            self.circuit_breakers[tool_name].is_open = False
+        breaker = self._get_circuit_breaker(tool_name)
+        breaker.record_success()
 
     async def call_tool(self, tool_name: str, **kwargs) -> Dict[str, Any]:
         """
@@ -166,6 +185,38 @@ class ToolClient:
         except Exception as e:
             self._record_failure(tool_name)
             raise RuntimeError(f"Tool call failed for {tool_name}: {e}")
+
+    async def invoke(
+        self,
+        tool_name: str,
+        params: Dict[str, Any],
+        intent_info: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        通用工具调用方法（带降级响应）。
+
+        Args:
+            tool_name: 工具名称
+            params: 工具参数
+            intent_info: 意图信息（用于降级响应）
+
+        Returns:
+            工具执行结果或降级响应
+        """
+        try:
+            return await self.call_tool(tool_name, **params)
+        except Exception as e:
+            # 构建降级响应
+            user_input = f"{tool_name}({params})"
+            fallback_intent = intent_info or {
+                "intent_level_1": "信息查询",
+                "intent_level_2": tool_name
+            }
+            return await self._fallback_response(
+                user_input=user_input,
+                intent_info=fallback_intent,
+                error=str(e)
+            )
 
     # ==========================================
     # Design Document Tool Wrappers (Section 4)
@@ -455,12 +506,16 @@ class ToolClient:
                     knowledge_result=knowledge_result
                 )
                 llm_message = await self.llm_client.generate(prompt)
+                # L11修复：确保LLM消息明确说明无数据
+                if llm_message and "数据" in llm_message and "不可用" not in llm_message:
+                    llm_message = f"⚠️ 服务暂时不可用：{llm_message}（当前无法获取真实数据）"
             except Exception:
                 pass
 
         # 如果LLM失败，使用默认提示
         if not llm_message:
-            llm_message = f"抱歉，{intent_info.get('intent_level_2', '相关服务')}暂时不可用。请稍后重试或联系客服。"
+            intent_name = intent_info.get('intent_level_2', '相关服务')
+            llm_message = f"抱歉，{intent_name}服务暂时不可用，无法获取真实数据。请稍后重试或联系客服获取帮助。"
 
         return {
             "fallback": True,
@@ -468,8 +523,9 @@ class ToolClient:
             "knowledge_references": knowledge_result if knowledge_result != "无相关指引" else None,
             "suggestion": "请稍后重试或联系客服",
             "original_error": error,
-            # 明确标记：不包含真实数据
-            "data_available": False
+            # L11修复：明确标记不包含真实数据，并添加提示
+            "data_available": False,
+            "data_notice": "⚠️ 当前响应为降级提示，不包含真实业务数据"
         }
 
 
@@ -487,5 +543,15 @@ async def get_tool_client() -> ToolClient:
 
 async def close_tool_client():
     """Close the tool client."""
+    global _tool_client
+    _tool_client = None
+
+
+def reset_tool_client():
+    """
+    H4修复：重置工具客户端单例（用于测试）
+
+    同步版本，供ServiceContainer调用。
+    """
     global _tool_client
     _tool_client = None

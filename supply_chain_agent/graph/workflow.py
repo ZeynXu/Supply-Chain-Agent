@@ -4,40 +4,785 @@ LangGraph Workflow definition for Supply Chain Agent.
 Defines the graph structure and nodes for multi-agent collaboration.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Callable
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import interrupt
+import traceback
+import asyncio
+import time
 
 from supply_chain_agent.graph.state import AgentState, state_manager
+
+# H6修复：导入具体异常类型
+from supply_chain_agent.common.exceptions import (
+    SupplyChainError,
+    RecoverableError,
+    UnrecoverableError,
+    ValidationError,
+    IntentParseError,
+    ToolExecutionError,
+    CircuitBreakerOpenError,
+    ExecutionPlanError,
+    ClarificationMaxAttemptsError,
+    is_recoverable,
+    wrap_exception,
+)
 
 
 class SupplyChainWorkflow:
     """Main workflow graph for Supply Chain Agent."""
 
-    def __init__(self, orchestrator: Optional['OrchestratorAgent'] = None):
+    def __init__(
+        self,
+        parser=None,
+        executor=None,
+        auditor=None,
+        report_generator=None
+    ):
         """
-        Initialize workflow with optional orchestrator for dependency injection.
+        Initialize workflow with agent dependencies (dependency injection).
 
         Args:
-            orchestrator: OrchestratorAgent instance for shared agent access
+            parser: ParserAgent instance for intent parsing
+            executor: ExecutorAgent instance for task execution
+            auditor: AuditorAgent instance for result auditing
+            report_generator: ReportGenerator instance for report generation
         """
-        self.orchestrator = orchestrator
+        # 直接注入需要的 agents，而不是依赖 Orchestrator
+        self.parser = parser
+        self.executor = executor
+        self.auditor = auditor
+        self.report_generator = report_generator
+
         self.checkpointer = MemorySaver()
         self.workflow = StateGraph(AgentState)
         self.setup_nodes()
         self.setup_edges()
         self.graph = self.workflow.compile(checkpointer=self.checkpointer)
 
-    def setup_nodes(self):
-        """Setup all nodes in the graph."""
+    # ============== M16修复：节点函数提取为类方法 ==============
 
+    async def _parse_input_node(self, state: AgentState) -> Dict[str, Any]:
+        """Parse user intent and extract information.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: parse_input - 解析师节点]")
+        # Use injected parser instance
+        parser = self.parser
+        if parser is None:
+            from supply_chain_agent.agents.parser import ParserAgent
+            parser = ParserAgent()
+
+        user_input = state["messages"][-1]["content"]
+
+        try:
+            intent = await parser.parse_intent(user_input)
+
+            # Extract entities into slots
+            extracted_slots = {}
+            if "entities" in intent:
+                for entity in intent["entities"]:
+                    if isinstance(entity, dict) and "type" in entity and "value" in entity:
+                        extracted_slots[entity["type"]] = entity["value"]
+
+            # Check for missing slots
+            missing_slots = []
+            if "required_slots" in intent:
+                for slot in intent["required_slots"]:
+                    if slot not in extracted_slots:
+                        missing_slots.append(slot)
+
+            return {
+                "user_intent": intent,
+                "extracted_slots": extracted_slots,
+                "missing_slots": missing_slots,
+                "clarification_loop_count": 0,  # 成功解析后重置澄清循环计数器
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "parse_input", "action": "parsed_intent", "intent": intent}
+                ]
+            }
+
+        # H6修复：区分异常类型
+        except IntentParseError as e:
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Intent parse error: {e}",
+                "last_error_type": "IntentParseError",
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": True,
+            }
+        except ValidationError as e:
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Validation error: {e}",
+                "last_error_type": "ValidationError",
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": False,
+            }
+        except Exception as e:
+            wrapped = wrap_exception(e, {"node": "parse_input"})
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"{type(wrapped).__name__}: {e}",
+                "last_error_type": type(wrapped).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": is_recoverable(wrapped),
+            }
+
+    async def _clarify_node(self, state: AgentState) -> Dict[str, Any]:
+        """Handle missing information by asking for clarification.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: clarify - 澄清节点]")
+
+        # 获取当前循环计数
+        current_loop_count = state.get("clarification_loop_count", 0)
+
+        # 检查澄清循环计数，达到3次直接跳转到handle_error
+        if current_loop_count >= 3:
+            print(f"[澄清节点] 已达到最大循环次数 (3次)，跳转到handle_error")
+            return {
+                "missing_slots": [],
+                "clarification_loop_count": current_loop_count,
+                "max_clarification_reached": True,
+                "messages": state.get("messages", []) + [{
+                    "role": "assistant",
+                    "content": "抱歉，已多次尝试获取信息但未能成功。请稍后重试或联系客服人员。"
+                }],
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "clarify", "action": "max_loops_reached", "count": current_loop_count}
+                ]
+            }
+
+        # Increment loop count
+        new_loop_count = current_loop_count + 1
+        print(f"[澄清节点] 当前循环次数: {new_loop_count}/3")
+
+        # Use injected parser instance
+        parser = self.parser
+        if parser is None:
+            from supply_chain_agent.agents.parser import ParserAgent
+            parser = ParserAgent()
+
+        # Request clarification from user (使用 interrupt 等待用户输入)
+        if state.get("missing_slots"):
+            response = await parser.request_clarification(state["missing_slots"])
+
+            # Use interrupt to pause execution and wait for user input
+            interrupt_data = {
+                "type": "clarification_required",
+                "prompt": response,
+                "missing_slots": state["missing_slots"],
+                "loop_count": new_loop_count
+            }
+            user_input = interrupt(interrupt_data)
+
+            # 正常返回，跳转 parse_input 重新解析
+            return {
+                "messages": state.get("messages", []) + [
+                    {"role": "assistant", "content": response},
+                    {"role": "user", "content": user_input}
+                ],
+                "clarification_loop_count": new_loop_count,
+                "waiting_for_input": False,
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "clarify", "action": "requested_clarification", "user_input": user_input, "loop_count": new_loop_count}
+                ]
+            }
+
+        # No missing slots, should not reach here normally
+        return {
+            "waiting_for_input": False,
+            "clarification_loop_count": new_loop_count
+        }
+
+    async def _plan_task_node(self, state: AgentState) -> Dict[str, Any]:
+        """Plan execution tasks based on intent.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: plan_task - 任务规划节点]")
+
+        try:
+            # Use injected executor instance
+            if self.executor:
+                tasks = await self.executor.create_execution_plan(state.get("user_intent", {}))
+            else:
+                from supply_chain_agent.agents.executor import ExecutorAgent
+                executor = ExecutorAgent()
+                tasks = await executor.create_execution_plan(state.get("user_intent", {}))
+
+            return {
+                "task_queue": tasks,
+                "current_task": tasks[0] if tasks else None,
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "plan_task", "action": "created_plan", "tasks": tasks}
+                ]
+            }
+
+        except ExecutionPlanError as e:
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Execution plan error: {e}",
+                "last_error_type": "ExecutionPlanError",
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": False,
+            }
+        except ValidationError as e:
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Validation error: {e}",
+                "last_error_type": "ValidationError",
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": False,
+            }
+        except Exception as e:
+            wrapped = wrap_exception(e, {"node": "plan_task"})
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"{type(wrapped).__name__}: {e}",
+                "last_error_type": type(wrapped).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": is_recoverable(wrapped),
+            }
+
+    async def _execute_task_node(self, state: AgentState) -> Dict[str, Any]:
+        """Execute tasks using tools.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: execute_task - 执行器节点]")
+
+        # Use injected executor instance
+        executor = self.executor
+        if executor is None:
+            from supply_chain_agent.agents.executor import ExecutorAgent
+            executor = ExecutorAgent()
+
+        if not state.get("task_queue"):
+            return {"execution_complete": True}
+
+        # M8修复：改进链式执行模式判断逻辑
+        user_intent = state.get("user_intent", {})
+        intent_level_2 = user_intent.get("intent_level_2", "")
+        task_queue = state.get("task_queue", [])
+
+        TOOL_DEPENDENCIES = {
+            "approve_work_order": ["query_work_order"],
+        }
+
+        def _needs_chain_execution(tasks: List[str], intent: str) -> bool:
+            if intent == "审批工单":
+                return True
+            if state.get("use_chain_execution", False):
+                return True
+            task_names = [t.get("name", t) if isinstance(t, dict) else t for t in tasks]
+            for task in task_names:
+                if task in TOOL_DEPENDENCIES:
+                    deps = TOOL_DEPENDENCIES[task]
+                    if any(dep in task_names for dep in deps):
+                        return True
+            return False
+
+        use_chain_execution = _needs_chain_execution(task_queue, intent_level_2)
+
+        try:
+            if use_chain_execution and len(state.get("task_queue", [])) > 1:
+                print(f"🔗 使用链式执行模式，执行计划: {state.get('task_queue', [])}")
+
+                chain_result = await executor.execute_plan_with_llm_feedback(
+                    execution_plan=state.get("task_queue", []),
+                    initial_slots=state.get("extracted_slots", {}),
+                    intent=user_intent
+                )
+
+                updates = {
+                    "tool_results": chain_result.get("results", {}),
+                    "task_queue": [],
+                    "current_task": None,
+                    "execution_complete": chain_result.get("success", False),
+                    "chain_execution_result": chain_result,
+                }
+
+                if not chain_result.get("success", False):
+                    updates["execution_failed"] = True
+                    updates["error_count"] = state.get("error_count", 0) + 1
+                    updates["last_error"] = chain_result.get("error", "链式执行失败")
+
+                context_item = {
+                    "agent": "execute_task",
+                    "action": "chain_execution",
+                    "plan": state.get("task_queue", []),
+                    "result": chain_result
+                }
+                updates["context_window"] = state.get("context_window", []) + [context_item]
+
+                return updates
+
+            # 普通执行模式
+            task = state["task_queue"][0]
+            result = await executor.execute_task(task, state.get("extracted_slots", {}))
+
+            new_tool_results = {**state.get("tool_results", {}), task: result}
+            new_task_queue = state["task_queue"][1:]
+
+            updates = {
+                "tool_results": new_tool_results,
+                "task_queue": new_task_queue,
+            }
+
+            if new_task_queue:
+                updates["current_task"] = new_task_queue[0]
+            else:
+                updates["current_task"] = None
+                updates["execution_complete"] = True
+
+            context_item = {"agent": "execute_task", "action": "executed_task", "task": task, "result": result}
+            updates["context_window"] = state.get("context_window", []) + [context_item]
+
+            return updates
+
+        except ToolExecutionError as e:
+            updates = {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Tool execution error: {e}",
+                "last_error_type": "ToolExecutionError",
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": True,
+            }
+            if state.get("error_count", 0) < 3:
+                return updates
+            else:
+                updates["execution_failed"] = True
+                return updates
+        except CircuitBreakerOpenError as e:
+            updates = {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Circuit breaker open: {e}",
+                "last_error_type": "CircuitBreakerOpenError",
+                "last_error_trace": traceback.format_exc(),
+                "is_recoverable": True,
+                "circuit_breaker_recovery_time": e.recovery_time,
+            }
+            updates["execution_failed"] = True
+            return updates
+        except RecoverableError as e:
+            updates = {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Recoverable error: {e}",
+                "last_error_type": type(e).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "is_recoverable": True,
+            }
+            if state.get("error_count", 0) < 3:
+                return updates
+            else:
+                updates["execution_failed"] = True
+                return updates
+        except UnrecoverableError as e:
+            return {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Unrecoverable error: {e}",
+                "last_error_type": type(e).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "is_recoverable": False,
+                "execution_failed": True,
+            }
+        except Exception as e:
+            wrapped = wrap_exception(e, {"node": "execute_task", "task": state.get("current_task")})
+            updates = {
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"{type(wrapped).__name__}: {e}",
+                "last_error_type": type(wrapped).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "validation_errors": state.get("validation_errors", []) + [str(e)],
+                "is_recoverable": is_recoverable(wrapped),
+            }
+            if state.get("error_count", 0) < 3:
+                return updates
+            else:
+                updates["execution_failed"] = True
+                return updates
+
+    async def _retry_node(self, state: AgentState) -> Dict[str, Any]:
+        """Handle retry logic for failed tasks.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: retry - 重试处理节点]")
+        if state.get("error_count", 0) < 3:
+            return {
+                "error_count": 0,
+                "last_error": None,
+                "validation_errors": [],
+                "should_retry": True
+            }
+        else:
+            return {
+                "should_retry": False,
+                "execution_failed": True
+            }
+
+    async def _audit_node(self, state: AgentState) -> Dict[str, Any]:
+        """Audit tool execution results.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: audit - 审计员节点]")
+
+        auditor = self.auditor
+        if auditor is None:
+            from supply_chain_agent.agents.auditor import AuditorAgent
+            auditor = AuditorAgent()
+
+        try:
+            audit = await auditor.audit_results(state.get("tool_results", {}))
+            return {
+                "audit_results": audit,
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "audit", "action": "audited_results", "audit": audit}
+                ]
+            }
+
+        except SupplyChainError as e:
+            return {
+                "audit_results": {"passed": False, "issues": [str(e)]},
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Audit error: {e}",
+                "last_error_type": type(e).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "is_recoverable": is_recoverable(e),
+            }
+        except Exception as e:
+            wrapped = wrap_exception(e, {"node": "audit"})
+            return {
+                "audit_results": {"passed": False, "issues": [str(e)]},
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Audit error: {wrapped}",
+                "last_error_type": type(wrapped).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "is_recoverable": is_recoverable(wrapped),
+            }
+
+    async def _generate_report_node(self, state: AgentState) -> Dict[str, Any]:
+        """Generate final report and response card.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        L4/L5修复：重构长函数，使用辅助方法减少嵌套层级。
+        """
+        print("[进入节点: generate_report - 报告生成节点]")
+
+        report_generator = self._get_report_generator()
+
+        if state.get("from_error_handler", False):
+            print("[报告生成节点] 处理来自错误处理节点的请求")
+            error_code = state.get("error_code", "GENERAL_FALLBACK")
+            template_params = state.get("error_template_params", {})
+            return await self._handle_error_response(state, report_generator, error_code, template_params)
+
+        try:
+            tool_results = state.get("tool_results", {})
+            extracted_slots = state.get("extracted_slots", {})
+
+            error_responses = await self._collect_tool_errors(
+                tool_results, extracted_slots, report_generator, state
+            )
+
+            if error_responses:
+                return self._build_error_report(error_responses, state)
+
+            report = await report_generator.generate_report(
+                state.get("user_intent", {}),
+                state.get("tool_results", {}),
+                state.get("audit_results", {})
+            )
+
+            card = await report_generator.generate_response_card(report)
+
+            return {
+                "final_report": report,
+                "response_card": card,
+                "messages": state.get("messages", []) + [{
+                    "role": "assistant",
+                    "content": card.get("summary", "处理完成")
+                }],
+                "context_window": state.get("context_window", []) + [
+                    {"agent": "generate_report", "action": "generated_report", "report": report}
+                ]
+            }
+
+        except SupplyChainError as e:
+            error_code = "WORKFLOW_EXECUTION_FAILED"
+            fallback_response = await report_generator.generate_fallback_response(
+                error_code,
+                trace_id=str(hash(str(e)))
+            )
+            return {
+                "messages": state.get("messages", []) + [{
+                    "role": "assistant",
+                    "content": fallback_response.get("message", f"抱歉，系统在处理您的请求时遇到问题：{str(e)}")
+                }],
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"Report generation error: {e}",
+                "last_error_type": type(e).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "error_code": error_code,
+                "is_recoverable": is_recoverable(e),
+            }
+        except Exception as e:
+            wrapped = wrap_exception(e, {"node": "generate_report"})
+            error_code = "WORKFLOW_EXECUTION_FAILED"
+            fallback_response = await report_generator.generate_fallback_response(
+                error_code,
+                trace_id=str(hash(str(e)))
+            )
+            return {
+                "messages": state.get("messages", []) + [{
+                    "role": "assistant",
+                    "content": fallback_response.get("message", f"抱歉，系统在处理您的请求时遇到问题：{str(e)}")
+                }],
+                "error_count": state.get("error_count", 0) + 1,
+                "last_error": f"{type(wrapped).__name__}: {e}",
+                "last_error_type": type(wrapped).__name__,
+                "last_error_trace": traceback.format_exc(),
+                "error_code": error_code,
+                "is_recoverable": is_recoverable(wrapped),
+            }
+
+    async def _handle_error_node(self, state: AgentState) -> Dict[str, Any]:
+        """Handle errors and generate error code for report generation.
+
+        M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
+        """
+        print("[进入节点: handle_error - 错误处理节点]")
+        last_error = state.get("last_error", "")
+        error_count = state.get("error_count", 0)
+        validation_errors = state.get("validation_errors", [])
+
+        report_generator = self.report_generator
+        if report_generator is None:
+            from supply_chain_agent.agents.report_generator import ReportGenerator
+            report_generator = ReportGenerator()
+
+        from supply_chain_agent.prompts.fallback_templates import determine_error_code
+        error_code = determine_error_code(
+            error_detail=last_error,
+            tool_name="workflow",
+            error_count=error_count,
+            validation_errors=validation_errors,
+            max_clarification_reached=state.get("max_clarification_reached", False)
+        )
+
+        extracted_slots = state.get("extracted_slots", {})
+        missing_slots = state.get("missing_slots", [])
+
+        template_params = report_generator.extract_template_params(
+            tool_name="workflow",
+            error_detail=last_error,
+            extracted_slots=extracted_slots,
+            tool_results=state.get("tool_results", {}),
+            missing_slots=missing_slots
+        )
+
+        if error_code == "GENERAL_FALLBACK":
+            import hashlib
+            trace_id = hashlib.md5(f"{last_error}{error_count}".encode()).hexdigest()[:12]
+            template_params["trace_id"] = trace_id
+
+        return {
+            "error_code": error_code,
+            "error_template_params": template_params,
+            "from_error_handler": True,
+            "context_window": state.get("context_window", []) + [
+                {
+                    "agent": "handle_error",
+                    "action": "determined_error_code",
+                    "error_code": error_code,
+                    "last_error": last_error,
+                    "error_count": error_count
+                }
+            ]
+        }
+
+    # ============== L4/L5修复：提取辅助方法 ==============
+
+    def _get_report_generator(self):
+        """获取或创建report_generator实例"""
+        if self.report_generator is None:
+            from supply_chain_agent.agents.report_generator import ReportGenerator
+            return ReportGenerator()
+        return self.report_generator
+
+    async def _handle_error_response(
+        self,
+        state: AgentState,
+        report_generator,
+        error_code: str,
+        template_params: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """L4修复：处理错误响应生成（提取辅助方法）"""
+        fallback_response = await report_generator.generate_fallback_response(
+            error_code,
+            tool_results=state.get("tool_results", {}),
+            **template_params
+        )
+
+        error_message = fallback_response.get("message", "系统遇到错误，请稍后重试。")
+        severity = fallback_response.get("severity", "warning")
+
+        return {
+            "final_report": {
+                "summary": error_message,
+                "error_code": error_code,
+                "severity": severity,
+                "from_error_handler": True
+            },
+            "response_card": {
+                "summary": error_message,
+                "error_code": error_code,
+                "severity": severity
+            },
+            "messages": state.get("messages", []) + [{
+                "role": "assistant",
+                "content": error_message
+            }],
+            "context_window": state.get("context_window", []) + [
+                {
+                    "agent": "generate_report",
+                    "action": "generated_error_report_from_handler",
+                    "error_code": error_code,
+                    "severity": severity
+                }
+            ]
+        }
+
+    async def _collect_tool_errors(
+        self,
+        tool_results: Dict[str, Any],
+        extracted_slots: Dict[str, Any],
+        report_generator,
+        state: AgentState
+    ) -> List[Dict[str, Any]]:
+        """L4修复：收集工具错误（提取辅助方法）"""
+        error_responses = []
+
+        for tool_name, result in tool_results.items():
+            if isinstance(result, dict) and (result.get("error") or result.get("success") == False):
+                error_detail = result.get("error", "未知错误")
+                if isinstance(error_detail, dict):
+                    error_detail = error_detail.get("message", str(error_detail))
+
+                error_code = report_generator.determine_error_code_from_result(tool_name, error_detail)
+                template_params = report_generator.extract_template_params(
+                    tool_name=tool_name,
+                    error_detail=error_detail,
+                    extracted_slots=extracted_slots,
+                    tool_results=tool_results,
+                    missing_slots=state.get("missing_slots", [])
+                )
+
+                fallback_response = await report_generator.generate_fallback_response(
+                    error_code,
+                    tool_results=tool_results,
+                    **template_params
+                )
+
+                error_responses.append({
+                    "tool_name": tool_name,
+                    "error_code": error_code,
+                    "message": fallback_response.get("message", ""),
+                    "severity": fallback_response.get("severity", "warning")
+                })
+
+        return error_responses
+
+    def _build_error_report(
+        self,
+        error_responses: List[Dict[str, Any]],
+        state: AgentState
+    ) -> Dict[str, Any]:
+        """L4修复：构建错误报告（提取辅助方法）"""
+        error_messages = [resp["message"] for resp in error_responses]
+        error_codes = [resp["error_code"] for resp in error_responses]
+        primary_error_code = error_codes[0] if error_codes else "WORKFLOW_EXECUTION_FAILED"
+
+        if len(error_messages) == 1:
+            error_response = error_messages[0]
+        else:
+            error_response = "⚠️ **查询结果**\n\n"
+            error_response += "\n\n---\n\n".join(error_messages)
+
+        return {
+            "final_report": {
+                "summary": error_response,
+                "errors": error_responses,
+                "error_codes": error_codes
+            },
+            "response_card": {
+                "summary": error_response,
+                "error_code": primary_error_code
+            },
+            "messages": state.get("messages", []) + [{
+                "role": "assistant",
+                "content": error_response
+            }],
+            "context_window": state.get("context_window", []) + [
+                {
+                    "agent": "generate_report",
+                    "action": "generated_error_report",
+                    "errors": error_responses,
+                    "error_codes": error_codes
+                }
+            ]
+        }
+
+    def setup_nodes(self):
+        """
+        Setup all nodes in the graph.
+
+        M16说明：节点函数定义在方法内部的原因
+        ==========================================
+        8个节点函数（约580行）定义在setup_nodes()方法内部，
+        这种设计有以下考量：
+
+        **当前设计的优点**:
+        1. 闭包访问self：节点函数可直接访问self.parser/executor等实例
+        2. 避免循环导入：节点函数在运行时动态绑定，不依赖模块级导入
+        3. 状态隔离：每次setup_nodes()调用创建新的节点函数实例
+
+        **潜在改进方案**:
+        1. 将节点函数提取为类方法（需处理self绑定）
+        2. 使用functools.partial绑定依赖
+        3. 引入节点注册机制
+
+        **重构建议**（后续优化）:
+        ```python
+        # 方案：节点作为类方法
+        async def _parse_input_node(self, state: AgentState) -> Dict[str, Any]:
+            ...
+
+        def setup_nodes(self):
+            self.workflow.add_node("parse_input", self._parse_input_node)
+        ```
+
+        当前保持现有设计，避免破坏核心工作流逻辑。
+        """
         # Node 1: Parser Agent (解析师)
         async def parse_input_node(state: AgentState) -> Dict[str, Any]:
             """Parse user intent and extract information."""
             print("[进入节点: parse_input - 解析师节点]")
-            # Use shared parser instance from orchestrator
-            parser = self.orchestrator.parser if self.orchestrator else None
+            # Use injected parser instance
+            parser = self.parser
             if parser is None:
                 from supply_chain_agent.agents.parser import ParserAgent
                 parser = ParserAgent()
@@ -65,16 +810,43 @@ class SupplyChainWorkflow:
                     "user_intent": intent,
                     "extracted_slots": extracted_slots,
                     "missing_slots": missing_slots,
+                    "clarification_loop_count": 0,  # 成功解析后重置澄清循环计数器
                     "context_window": state.get("context_window", []) + [
                         {"agent": "parse_input", "action": "parsed_intent", "intent": intent}
                     ]
                 }
 
-            except Exception as e:
+            # H6修复：区分异常类型
+            except IntentParseError as e:
+                # 意图解析错误 - 可恢复，让用户重新输入
                 return {
                     "error_count": state.get("error_count", 0) + 1,
-                    "last_error": f"Parser error: {e}",
-                    "validation_errors": state.get("validation_errors", []) + [f"Parser error: {e}"],
+                    "last_error": f"Intent parse error: {e}",
+                    "last_error_type": "IntentParseError",
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": True,
+                }
+            except ValidationError as e:
+                # 验证错误 - 不可恢复，需用户提供正确输入
+                return {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Validation error: {e}",
+                    "last_error_type": "ValidationError",
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": False,
+                }
+            except Exception as e:
+                # 其他未知异常 - 包装后处理
+                wrapped = wrap_exception(e, {"node": "parse_input"})
+                return {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"{type(wrapped).__name__}: {e}",
+                    "last_error_type": type(wrapped).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": is_recoverable(wrapped),
                 }
 
         # Node 2: Clarification Handler
@@ -105,8 +877,8 @@ class SupplyChainWorkflow:
             new_loop_count = current_loop_count + 1
             print(f"[澄清节点] 当前循环次数: {new_loop_count}/3")
 
-            # Use shared parser instance from orchestrator
-            parser = self.orchestrator.parser if self.orchestrator else None
+            # Use injected parser instance
+            parser = self.parser
             if parser is None:
                 from supply_chain_agent.agents.parser import ParserAgent
                 parser = ParserAgent()
@@ -149,9 +921,9 @@ class SupplyChainWorkflow:
             print("[进入节点: plan_task - 任务规划节点]")
 
             try:
-                # Use shared executor instance from orchestrator
-                if self.orchestrator:
-                    tasks = await self.orchestrator.executor.create_execution_plan(state.get("user_intent", {}))
+                # Use injected executor instance
+                if self.executor:
+                    tasks = await self.executor.create_execution_plan(state.get("user_intent", {}))
                 else:
                     from supply_chain_agent.agents.executor import ExecutorAgent
                     executor = ExecutorAgent()
@@ -165,11 +937,37 @@ class SupplyChainWorkflow:
                     ]
                 }
 
-            except Exception as e:
+            # H6修复：区分异常类型
+            except ExecutionPlanError as e:
+                # 执行计划错误 - 不可恢复
                 return {
                     "error_count": state.get("error_count", 0) + 1,
-                    "last_error": f"Task planning error: {e}",
-                    "validation_errors": state.get("validation_errors", []) + [f"Task planning error: {e}"],
+                    "last_error": f"Execution plan error: {e}",
+                    "last_error_type": "ExecutionPlanError",
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": False,
+                }
+            except ValidationError as e:
+                # 验证错误 - 不可恢复
+                return {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Validation error: {e}",
+                    "last_error_type": "ValidationError",
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": False,
+                }
+            except Exception as e:
+                # 其他未知异常 - 包装后处理
+                wrapped = wrap_exception(e, {"node": "plan_task"})
+                return {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"{type(wrapped).__name__}: {e}",
+                    "last_error_type": type(wrapped).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": is_recoverable(wrapped),
                 }
 
         # Node 4: Executor Agent (调度员)
@@ -182,8 +980,8 @@ class SupplyChainWorkflow:
             """
             print("[进入节点: execute_task - 执行器节点]")
 
-            # Use shared executor instance from orchestrator
-            executor = self.orchestrator.executor if self.orchestrator else None
+            # Use injected executor instance
+            executor = self.executor
             if executor is None:
                 from supply_chain_agent.agents.executor import ExecutorAgent
                 executor = ExecutorAgent()
@@ -191,14 +989,40 @@ class SupplyChainWorkflow:
             if not state.get("task_queue"):
                 return {"execution_complete": True}
 
-            # 检查是否应该使用链式执行模式
+            # M8修复：改进链式执行模式判断逻辑
+            # 链式执行仅用于需要前一步结果作为后一步输入的场景
+            # 并行工具（如订单查询+物流查询）不需要链式执行
             user_intent = state.get("user_intent", {})
             intent_level_2 = user_intent.get("intent_level_2", "")
-            use_chain_execution = (
-                intent_level_2 == "审批工单" or
-                state.get("use_chain_execution", False) or
-                len(state.get("task_queue", [])) > 1  # 多个工具时使用链式执行
-            )
+            task_queue = state.get("task_queue", [])
+
+            # 判断是否需要链式执行的条件：
+            # 1. 审批工单：需要先查询工单状态，再执行审批
+            # 2. 显式标记：state中设置了use_chain_execution
+            # 3. 数据依赖：工具间存在数据传递（通过TOOL_DEPENDENCIES定义）
+            TOOL_DEPENDENCIES = {
+                # 审批工单链：查询状态 → 审批操作
+                "approve_work_order": ["query_work_order"],
+            }
+
+            def _needs_chain_execution(tasks: List[str], intent: str) -> bool:
+                """判断任务列表是否需要链式执行"""
+                # 审批工单需要链式
+                if intent == "审批工单":
+                    return True
+                # 显式标记
+                if state.get("use_chain_execution", False):
+                    return True
+                # 检查工具依赖关系
+                task_names = [t.get("name", t) if isinstance(t, dict) else t for t in tasks]
+                for task in task_names:
+                    if task in TOOL_DEPENDENCIES:
+                        deps = TOOL_DEPENDENCIES[task]
+                        if any(dep in task_names for dep in deps):
+                            return True
+                return False
+
+            use_chain_execution = _needs_chain_execution(task_queue, intent_level_2)
 
             try:
                 # 链式执行模式：一次性执行所有工具，每步LLM解析结果
@@ -261,17 +1085,71 @@ class SupplyChainWorkflow:
 
                 return updates
 
-            except Exception as e:
-                # Add error
+            # H6修复：区分异常类型
+            except ToolExecutionError as e:
+                # 工具执行错误 - 可能可恢复，根据错误类型判断
                 updates = {
                     "error_count": state.get("error_count", 0) + 1,
-                    "last_error": f"Execution error: {e}",
-                    "validation_errors": state.get("validation_errors", []) + [f"Execution error: {e}"],
+                    "last_error": f"Tool execution error: {e}",
+                    "last_error_type": "ToolExecutionError",
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": True,  # 工具执行错误通常可重试
                 }
-
-                # Check if we should retry
                 if state.get("error_count", 0) < 3:
-                    return updates  # Will go to retry handler
+                    return updates
+                else:
+                    updates["execution_failed"] = True
+                    return updates
+            except CircuitBreakerOpenError as e:
+                # 熔断器打开 - 等待后可恢复
+                updates = {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Circuit breaker open: {e}",
+                    "last_error_type": "CircuitBreakerOpenError",
+                    "last_error_trace": traceback.format_exc(),
+                    "is_recoverable": True,
+                    "circuit_breaker_recovery_time": e.recovery_time,
+                }
+                updates["execution_failed"] = True  # 熔断器打开时不重试，直接失败
+                return updates
+            except RecoverableError as e:
+                # 其他可恢复错误
+                updates = {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Recoverable error: {e}",
+                    "last_error_type": type(e).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "is_recoverable": True,
+                }
+                if state.get("error_count", 0) < 3:
+                    return updates
+                else:
+                    updates["execution_failed"] = True
+                    return updates
+            except UnrecoverableError as e:
+                # 不可恢复错误 - 直接失败
+                return {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Unrecoverable error: {e}",
+                    "last_error_type": type(e).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "is_recoverable": False,
+                    "execution_failed": True,
+                }
+            except Exception as e:
+                # 其他未知异常 - 包装后处理
+                wrapped = wrap_exception(e, {"node": "execute_task", "task": state.get("current_task")})
+                updates = {
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"{type(wrapped).__name__}: {e}",
+                    "last_error_type": type(wrapped).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "validation_errors": state.get("validation_errors", []) + [str(e)],
+                    "is_recoverable": is_recoverable(wrapped),
+                }
+                if state.get("error_count", 0) < 3:
+                    return updates
                 else:
                     updates["execution_failed"] = True
                     return updates
@@ -298,8 +1176,8 @@ class SupplyChainWorkflow:
             """Audit tool execution results."""
             print("[进入节点: audit - 审计员节点]")
 
-            # Use shared auditor instance from orchestrator
-            auditor = self.orchestrator.auditor if self.orchestrator else None
+            # Use injected auditor instance
+            auditor = self.auditor
             if auditor is None:
                 from supply_chain_agent.agents.auditor import AuditorAgent
                 auditor = AuditorAgent()
@@ -313,154 +1191,61 @@ class SupplyChainWorkflow:
                     ]
                 }
 
-            except Exception as e:
+            # H6修复：区分异常类型
+            except SupplyChainError as e:
+                # 已知业务异常
                 return {
                     "audit_results": {"passed": False, "issues": [str(e)]},
                     "error_count": state.get("error_count", 0) + 1,
                     "last_error": f"Audit error: {e}",
+                    "last_error_type": type(e).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "is_recoverable": is_recoverable(e),
+                }
+            except Exception as e:
+                # 未知异常 - 包装后处理
+                wrapped = wrap_exception(e, {"node": "audit"})
+                return {
+                    "audit_results": {"passed": False, "issues": [str(e)]},
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"Audit error: {wrapped}",
+                    "last_error_type": type(wrapped).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "is_recoverable": is_recoverable(wrapped),
                 }
 
         # Node 7: Report Generator
         async def generate_report_node(state: AgentState) -> Dict[str, Any]:
-            """Generate final report and response card.
+            """
+            Generate final report and response card.
 
-            此节点可以处理：
-            1. 正常的报告生成流程（从 audit_node 进入）
-            2. 错误响应生成（从 handle_error_node 进入）
+            L4/L5修复：重构长函数，使用辅助方法减少嵌套层级。
             """
             print("[进入节点: generate_report - 报告生成节点]")
 
-            # Use shared report_generator instance from orchestrator
-            report_generator = self.orchestrator.report_generator if self.orchestrator else None
-            if report_generator is None:
-                from supply_chain_agent.agents.report_generator import ReportGenerator
-                report_generator = ReportGenerator()
+            report_generator = self._get_report_generator()
 
             # 检查是否从 handle_error_node 进入
             if state.get("from_error_handler", False):
                 print("[报告生成节点] 处理来自错误处理节点的请求")
-
                 error_code = state.get("error_code", "GENERAL_FALLBACK")
                 template_params = state.get("error_template_params", {})
-
-                # 调用 report_generator 的降级响应方法
-                fallback_response = await report_generator.generate_fallback_response(
-                    error_code,
-                    tool_results=state.get("tool_results", {}),
-                    **template_params
-                )
-
-                error_message = fallback_response.get("message", "系统遇到错误，请稍后重试。")
-                severity = fallback_response.get("severity", "warning")
-
-                return {
-                    "final_report": {
-                        "summary": error_message,
-                        "error_code": error_code,
-                        "severity": severity,
-                        "from_error_handler": True
-                    },
-                    "response_card": {
-                        "summary": error_message,
-                        "error_code": error_code,
-                        "severity": severity
-                    },
-                    "messages": state.get("messages", []) + [{
-                        "role": "assistant",
-                        "content": error_message
-                    }],
-                    "context_window": state.get("context_window", []) + [
-                        {
-                            "agent": "generate_report",
-                            "action": "generated_error_report_from_handler",
-                            "error_code": error_code,
-                            "severity": severity
-                        }
-                    ]
-                }
+                return await self._handle_error_response(state, report_generator, error_code, template_params)
 
             try:
-                # Check if there were any tool errors
+                # 检查工具错误
                 tool_results = state.get("tool_results", {})
                 extracted_slots = state.get("extracted_slots", {})
-                error_responses = []
 
-                for tool_name, result in tool_results.items():
-                    if isinstance(result, dict):
-                        if result.get("error") or result.get("success") == False:
-                            # Extract error detail
-                            error_detail = result.get("error", "未知错误")
-                            if isinstance(error_detail, dict):
-                                error_detail = error_detail.get("message", str(error_detail))
+                error_responses = await self._collect_tool_errors(
+                    tool_results, extracted_slots, report_generator, state
+                )
 
-                            # 确定错误编码
-                            error_code = report_generator.determine_error_code_from_result(
-                                tool_name, error_detail
-                            )
-
-                            # 提取模板参数（传入 extracted_slots 和 tool_results）
-                            template_params = report_generator.extract_template_params(
-                                tool_name=tool_name,
-                                error_detail=error_detail,
-                                extracted_slots=extracted_slots,
-                                tool_results=tool_results,
-                                missing_slots=state.get("missing_slots", [])
-                            )
-
-                            # 调用 report_generator 的降级响应方法
-                            fallback_response = await report_generator.generate_fallback_response(
-                                error_code,
-                                tool_results=tool_results,
-                                **template_params
-                            )
-
-                            error_responses.append({
-                                "tool_name": tool_name,
-                                "error_code": error_code,
-                                "message": fallback_response.get("message", ""),
-                                "severity": fallback_response.get("severity", "warning")
-                            })
-
-                # If there were errors, generate error response using fallback templates
+                # 如果有错误，生成错误报告
                 if error_responses:
-                    # 合并所有错误响应
-                    error_messages = [resp["message"] for resp in error_responses]
-                    error_codes = [resp["error_code"] for resp in error_responses]
+                    return self._build_error_report(error_responses, state)
 
-                    # 使用第一个错误的编码作为主要错误编码
-                    primary_error_code = error_codes[0] if error_codes else "WORKFLOW_EXECUTION_FAILED"
-
-                    # 如果有多个错误，拼接消息
-                    if len(error_messages) == 1:
-                        error_response = error_messages[0]
-                    else:
-                        error_response = "⚠️ **查询结果**\n\n"
-                        error_response += "\n\n---\n\n".join(error_messages)
-
-                    return {
-                        "final_report": {
-                            "summary": error_response,
-                            "errors": error_responses,
-                            "error_codes": error_codes
-                        },
-                        "response_card": {
-                            "summary": error_response,
-                            "error_code": primary_error_code
-                        },
-                        "messages": state.get("messages", []) + [{
-                            "role": "assistant",
-                            "content": error_response
-                        }],
-                        "context_window": state.get("context_window", []) + [
-                            {
-                                "agent": "generate_report",
-                                "action": "generated_error_report",
-                                "errors": error_responses,
-                                "error_codes": error_codes
-                            }
-                        ]
-                    }
-
+                # 正常报告生成
                 report = await report_generator.generate_report(
                     state.get("user_intent", {}),
                     state.get("tool_results", {}),
@@ -481,16 +1266,14 @@ class SupplyChainWorkflow:
                     ]
                 }
 
-            except Exception as e:
-                # 发生异常时，使用 WORKFLOW_EXECUTION_FAILED 错误编码
+            # H6修复：区分异常类型
+            except SupplyChainError as e:
+                # 已知业务异常
                 error_code = "WORKFLOW_EXECUTION_FAILED"
-
-                # 调用 report_generator 的降级响应方法
                 fallback_response = await report_generator.generate_fallback_response(
                     error_code,
                     trace_id=str(hash(str(e)))
                 )
-
                 return {
                     "messages": state.get("messages", []) + [{
                         "role": "assistant",
@@ -498,7 +1281,30 @@ class SupplyChainWorkflow:
                     }],
                     "error_count": state.get("error_count", 0) + 1,
                     "last_error": f"Report generation error: {e}",
+                    "last_error_type": type(e).__name__,
+                    "last_error_trace": traceback.format_exc(),
                     "error_code": error_code,
+                    "is_recoverable": is_recoverable(e),
+                }
+            except Exception as e:
+                # 未知异常 - 包装后处理
+                wrapped = wrap_exception(e, {"node": "generate_report"})
+                error_code = "WORKFLOW_EXECUTION_FAILED"
+                fallback_response = await report_generator.generate_fallback_response(
+                    error_code,
+                    trace_id=str(hash(str(e)))
+                )
+                return {
+                    "messages": state.get("messages", []) + [{
+                        "role": "assistant",
+                        "content": fallback_response.get("message", f"抱歉，系统在处理您的请求时遇到问题：{str(e)}")
+                    }],
+                    "error_count": state.get("error_count", 0) + 1,
+                    "last_error": f"{type(wrapped).__name__}: {e}",
+                    "last_error_type": type(wrapped).__name__,
+                    "last_error_trace": traceback.format_exc(),
+                    "error_code": error_code,
+                    "is_recoverable": is_recoverable(wrapped),
                 }
 
         # Node 8: Error Handler
@@ -513,60 +1319,21 @@ class SupplyChainWorkflow:
             error_count = state.get("error_count", 0)
             validation_errors = state.get("validation_errors", [])
 
-            # Use shared report_generator instance from orchestrator
-            report_generator = self.orchestrator.report_generator if self.orchestrator else None
+            # Use injected report_generator instance
+            report_generator = self.report_generator
             if report_generator is None:
                 from supply_chain_agent.agents.report_generator import ReportGenerator
                 report_generator = ReportGenerator()
 
-            # 根据错误类型确定错误编码
-            error_code = "GENERAL_FALLBACK"
-
-            # 1. 检查是否达到最大澄清循环次数
-            if state.get("max_clarification_reached", False):
-                error_code = "ENTITY_EXTRACTION_INCOMPLETE"
-            # 2. 检查是否有验证错误
-            elif validation_errors:
-                # 分析验证错误类型
-                validation_error_str = " ".join(validation_errors).lower()
-
-                if "parser" in validation_error_str:
-                    error_code = "INTENT_CLASSIFICATION_LOW_CONFIDENCE"
-                elif "entity" in validation_error_str or "实体" in validation_error_str:
-                    error_code = "ENTITY_EXTRACTION_INCOMPLETE"
-                elif "slot" in validation_error_str or "槽位" in validation_error_str:
-                    error_code = "SLOT_FILLING_FAILED"
-                elif "planning" in validation_error_str or "task" in validation_error_str:
-                    error_code = "WORKFLOW_EXECUTION_FAILED"
-                else:
-                    error_code = "WORKFLOW_EXECUTION_FAILED"
-            # 3. 根据错误计数和最后错误信息判断
-            elif error_count >= 3:
-                error_code = "TOOL_CALL_MAX_RETRIES_EXCEEDED"
-            elif last_error:
-                last_error_lower = last_error.lower()
-
-                # 数据库连接错误
-                if "database" in last_error_lower or "数据库" in last_error:
-                    error_code = "DATABASE_CONNECTION_FAILED"
-                # MCP 服务不可达
-                elif "mcp" in last_error_lower or "service" in last_error_lower or "服务" in last_error:
-                    error_code = "MCP_SERVER_UNREACHABLE"
-                # 熔断
-                elif "circuit" in last_error_lower or "熔断" in last_error:
-                    error_code = "CIRCUIT_BREAKER_OPEN"
-                # 会话过期
-                elif "session" in last_error_lower or "会话" in last_error:
-                    error_code = "SESSION_EXPIRED"
-                # 上下文超限
-                elif "context" in last_error_lower or "上下文" in last_error:
-                    error_code = "CONTEXT_LENGTH_EXCEEDED"
-                # 超时
-                elif "timeout" in last_error_lower or "超时" in last_error:
-                    error_code = "QUERY_ORDER_TIMEOUT"  # 通用超时
-                # 默认工作流执行失败
-                else:
-                    error_code = "WORKFLOW_EXECUTION_FAILED"
+            # 使用统一的错误代码确定函数（解决M19重复定义问题）
+            from supply_chain_agent.prompts.fallback_templates import determine_error_code
+            error_code = determine_error_code(
+                error_detail=last_error,
+                tool_name="workflow",
+                error_count=error_count,
+                validation_errors=validation_errors,
+                max_clarification_reached=state.get("max_clarification_reached", False)
+            )
 
             # 提取模板参数
             extracted_slots = state.get("extracted_slots", {})
@@ -835,6 +1602,8 @@ class SupplyChainWorkflow:
         Returns:
             Interrupt info dict or None
         """
+        from supply_chain_agent.common.protocols import InterruptInfo
+
         config = {"configurable": {"thread_id": thread_id}}
         state_snapshot = self.graph.get_state(config)
         if state_snapshot and hasattr(state_snapshot, 'values'):
@@ -842,19 +1611,9 @@ class SupplyChainWorkflow:
             interrupts = state_snapshot.values.get('__interrupt__')
             if interrupts:
                 # Return the first interrupt info
-                for interrupt in interrupts:
-                    # Handle different interrupt formats
-                    if hasattr(interrupt, 'value'):
-                        return interrupt.value
-                    elif isinstance(interrupt, dict):
-                        return interrupt
-                    elif isinstance(interrupt, tuple) and len(interrupt) >= 2:
-                        return interrupt[1] if isinstance(interrupt[1], dict) else {"prompt": str(interrupt[1])}
-                    else:
-                        try:
-                            return dict(interrupt) if interrupt else None
-                        except (TypeError, ValueError):
-                            return {"prompt": str(interrupt)} if interrupt else None
+                for interrupt_data in interrupts:
+                    info = InterruptInfo.from_langgraph_interrupt(interrupt_data)
+                    return info.to_dict()
         return None
 
     def check_interrupt_in_result(self, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -867,34 +1626,14 @@ class SupplyChainWorkflow:
         Returns:
             Interrupt info dict or None
         """
+        from supply_chain_agent.common.protocols import InterruptInfo
+
         interrupts = result.get('__interrupt__')
         if interrupts:
             # Return the first interrupt info
-            for interrupt in interrupts:
-                # Handle different interrupt formats
-                # LangGraph Interrupt object has a 'value' attribute
-                if hasattr(interrupt, 'value'):
-                    return interrupt.value
-                # Handle tuple format: (Interrupt(...),) - the interrupt itself is the tuple element
-                elif isinstance(interrupt, tuple):
-                    # If tuple contains Interrupt objects
-                    for item in interrupt:
-                        if hasattr(item, 'value'):
-                            return item.value
-                        elif isinstance(item, dict):
-                            return item
-                    # Fallback: return the tuple as dict if possible
-                    if len(interrupt) >= 2:
-                        return interrupt[1] if isinstance(interrupt[1], dict) else {"prompt": str(interrupt[1])}
-                    return {"prompt": str(interrupt[0]) if interrupt else "请提供更多信息"}
-                elif isinstance(interrupt, dict):
-                    return interrupt
-                else:
-                    # Fallback: try to convert to dict or return as string
-                    try:
-                        return dict(interrupt) if interrupt else None
-                    except (TypeError, ValueError):
-                        return {"prompt": str(interrupt)} if interrupt else None
+            for interrupt_data in interrupts:
+                info = InterruptInfo.from_langgraph_interrupt(interrupt_data)
+                return info.to_dict()
         return None
 
     def get_graph_info(self) -> Dict[str, Any]:
@@ -917,25 +1656,251 @@ class SupplyChainWorkflow:
             # For now, return placeholder
         return edges
 
+    # ============== M1修复：工作流控制逻辑移到Workflow类 ==============
+
+    # 节点元数据常量（从Orchestrator移过来）
+    NODE_METADATA = {
+        "parse_input": {
+            "agentType": "parse_input",
+            "title": "解析用户意图",
+            "description": "正在分析您的请求，提取关键信息..."
+        },
+        "clarify": {
+            "agentType": "clarify",
+            "title": "请求澄清",
+            "description": "需要更多信息来处理您的请求..."
+        },
+        "plan_task": {
+            "agentType": "plan_task",
+            "title": "任务规划",
+            "description": "正在制定执行计划..."
+        },
+        "execute_task": {
+            "agentType": "execute_task",
+            "title": "执行任务",
+            "description": "正在调用工具执行任务..."
+        },
+        "retry": {
+            "agentType": "retry",
+            "title": "重试处理",
+            "description": "正在重试失败的任务..."
+        },
+        "audit": {
+            "agentType": "audit",
+            "title": "审计结果",
+            "description": "正在验证执行结果..."
+        },
+        "generate_report": {
+            "agentType": "generate_report",
+            "title": "生成报告",
+            "description": "正在生成最终响应..."
+        },
+        "handle_error": {
+            "agentType": "handle_error",
+            "title": "错误处理",
+            "description": "正在处理错误..."
+        }
+    }
+
+    async def process_with_events(
+        self,
+        user_input: str,
+        thread_id: str = "default",
+        emit_event: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        M1修复：处理工作流并发送事件（从Orchestrator移过来）。
+
+        Args:
+            user_input: 用户输入
+            thread_id: 线程ID
+            emit_event: 事件发送回调
+
+        Returns:
+            最终状态
+        """
+        initial_state = state_manager.create_initial_state(user_input)
+        config = {"configurable": {"thread_id": thread_id}}
+
+        node_metadata = self.NODE_METADATA
+        current_state = initial_state
+        step_counter = 0
+
+        async def emit(event_type: str, data: Dict[str, Any]):
+            if emit_event:
+                if asyncio.iscoroutinefunction(emit_event):
+                    await emit_event(event_type, data)
+                else:
+                    emit_event(event_type, data)
+
+        # Stream the workflow execution
+        async for event in self.graph.astream(initial_state, config=config):
+            for node_name, node_output in event.items():
+                if node_name == "__interrupt__":
+                    if isinstance(node_output, tuple):
+                        return {"__interrupt__": [node_output]}
+                    elif isinstance(node_output, list):
+                        return {"__interrupt__": node_output}
+                    elif isinstance(node_output, dict):
+                        return {"__interrupt__": [node_output]}
+                    else:
+                        return {"__interrupt__": [(node_output,)]}
+
+                if node_name in node_metadata:
+                    step_counter += 1
+                    step_id = f"{node_name}-{step_counter}"
+                    metadata = node_metadata[node_name]
+
+                    await emit("step_start", {
+                        "stepId": step_id,
+                        "agentType": metadata["agentType"],
+                        "title": metadata["title"],
+                        "description": metadata["description"]
+                    })
+
+                    if node_name == "execute_task" and isinstance(node_output, dict):
+                        tool_results = node_output.get("tool_results", {})
+                        for tool_name, tool_result in tool_results.items():
+                            await emit("tool_call", {
+                                "stepId": step_id,
+                                "toolCall": {
+                                    "id": f"tool-{tool_name}-{step_counter}",
+                                    "name": tool_name,
+                                    "parameters": {},
+                                    "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
+                                    "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
+                                    "startTime": int(time.time() * 1000),
+                                    "endTime": int(time.time() * 1000)
+                                }
+                            })
+
+                    await emit("step_end", {"stepId": step_id})
+
+                current_state = {**current_state, **node_output} if isinstance(node_output, dict) else current_state
+
+        return current_state
+
+    async def resume_with_events(
+        self,
+        user_input: str,
+        thread_id: str = "default",
+        emit_event: Optional[Callable] = None
+    ) -> Dict[str, Any]:
+        """
+        M1修复：恢复工作流并发送事件（从Orchestrator移过来）。
+
+        Args:
+            user_input: 用户澄清输入
+            thread_id: 线程ID
+            emit_event: 事件发送回调
+
+        Returns:
+            最终状态
+        """
+        from langgraph.types import Command
+
+        config = {"configurable": {"thread_id": thread_id}}
+        node_metadata = self.NODE_METADATA
+        step_counter = 0
+        current_state = {}
+
+        async def emit(event_type: str, data: Dict[str, Any]):
+            if emit_event:
+                if asyncio.iscoroutinefunction(emit_event):
+                    await emit_event(event_type, data)
+                else:
+                    emit_event(event_type, data)
+
+        async for event in self.graph.astream(Command(resume=user_input), config=config):
+            for node_name, node_output in event.items():
+                if node_name == "__interrupt__":
+                    if isinstance(node_output, tuple):
+                        return {"__interrupt__": [node_output]}
+                    elif isinstance(node_output, list):
+                        return {"__interrupt__": node_output}
+                    elif isinstance(node_output, dict):
+                        return {"__interrupt__": [node_output]}
+                    else:
+                        return {"__interrupt__": [(node_output,)]}
+
+                if node_name in node_metadata:
+                    step_counter += 1
+                    step_id = f"{node_name}-{step_counter}"
+                    metadata = node_metadata[node_name]
+
+                    await emit("step_start", {
+                        "stepId": step_id,
+                        "agentType": metadata["agentType"],
+                        "title": metadata["title"],
+                        "description": metadata["description"]
+                    })
+
+                    if node_name == "execute_task" and isinstance(node_output, dict):
+                        tool_results = node_output.get("tool_results", {})
+                        for tool_name, tool_result in tool_results.items():
+                            await emit("tool_call", {
+                                "stepId": step_id,
+                                "toolCall": {
+                                    "id": f"tool-{tool_name}-{step_counter}",
+                                    "name": tool_name,
+                                    "parameters": {},
+                                    "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
+                                    "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
+                                    "startTime": int(time.time() * 1000),
+                                    "endTime": int(time.time() * 1000)
+                                }
+                            })
+
+                    await emit("step_end", {"stepId": step_id})
+
+                current_state = {**current_state, **node_output} if isinstance(node_output, dict) else current_state
+
+        return current_state
+
 
 # Global workflow instance (lazy initialization)
 _workflow_instance: Optional[SupplyChainWorkflow] = None
 
 
-def get_workflow(orchestrator: Optional['OrchestratorAgent'] = None) -> SupplyChainWorkflow:
+def get_workflow(
+    parser=None,
+    executor=None,
+    auditor=None,
+    report_generator=None
+) -> SupplyChainWorkflow:
     """
     Get or create workflow instance.
 
     Args:
-        orchestrator: OrchestratorAgent instance for shared agent access
+        parser: ParserAgent instance for intent parsing
+        executor: ExecutorAgent instance for task execution
+        auditor: AuditorAgent instance for result auditing
+        report_generator: ReportGenerator instance for report generation
 
     Returns:
         SupplyChainWorkflow instance
     """
     global _workflow_instance
-    if _workflow_instance is None or orchestrator is not None:
-        _workflow_instance = SupplyChainWorkflow(orchestrator)
+    # 如果提供了所有 agents，创建新实例
+    if all([parser, executor, auditor, report_generator]):
+        _workflow_instance = SupplyChainWorkflow(
+            parser=parser,
+            executor=executor,
+            auditor=auditor,
+            report_generator=report_generator
+        )
+    elif _workflow_instance is None:
+        # 没有提供 agents 且没有现有实例，创建默认实例
+        _workflow_instance = SupplyChainWorkflow()
     return _workflow_instance
+
+
+def reset_workflow():
+    """
+    H4修复：重置工作流单例（用于测试）
+    """
+    global _workflow_instance
+    _workflow_instance = None
 
 
 # Backward compatibility: global workflow property

@@ -1,9 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.3  
-**生成日期**: 2026年6月1日  
+**文档版本**: V2.4  
+**生成日期**: 2026年6月4日  
 **研究范围**: 完整项目代码与文档分析  
-**更新说明**: 基于代码实际实现进行全面更新  
+**更新说明**: 基于代码实际实现进行全面更新，反映最新架构优化  
 
 ---
 
@@ -52,14 +52,20 @@
 ```
 Supply_Chain_Agent/
 ├── supply_chain_agent/           # 主模块
+│   ├── common/                   # 公共模块
+│   │   ├── exceptions.py         # 异常层次结构
+│   │   ├── service_container.py  # 服务容器（依赖注入）
+│   │   ├── protocols.py          # 消息协议定义
+│   │   ├── param_validator.py    # 参数验证器
+│   │   └── valid_values.py       # 有效值定义
 │   ├── agents/                   # Agent定义
-│   │   ├── orchestrator.py       # 总控Agent - 协调所有子Agent (~650行)
-│   │   ├── parser.py             # 解析师Agent - 意图识别与实体提取 (~830行)
-│   │   ├── executor.py           # 调度员Agent - 工具编排与执行 (~1087行)
-│   │   ├── auditor.py            # 审计员Agent - 结果验证与风控 (~334行)
-│   │   ├── report_generator.py   # 报告生成器 - 响应格式化 (~475行)
+│   │   ├── orchestrator.py       # 总控Agent - 协调所有子Agent
+│   │   ├── parser.py             # 解析师Agent - 意图识别与实体提取
+│   │   ├── executor.py           # 调度员Agent - 工具编排与执行
+│   │   ├── auditor.py            # 审计员Agent - 结果验证与风控
+│   │   ├── report_generator.py   # 报告生成器 - 响应格式化
 │   │   ├── retry_manager.py      # 重试管理器 - 智能重试与熔断
-│   │   └── llm_client.py         # LLM客户端 - 统一LLM接口 (~205行)
+│   │   └── llm_client.py         # LLM客户端 - 统一LLM接口
 │   ├── nlp/                      # NLP模块
 │   │   ├── bert_ner.py           # BERT NER实体识别 (~330行)
 │   │   └── __init__.py           # 模块初始化
@@ -257,10 +263,15 @@ Supply_Chain_Agent/
 **文件位置**: `supply_chain_agent/agents/orchestrator.py`
 
 **核心职责**：
-- 维护全局状态（State）
-- 管理上下文窗口
-- 决定唤醒哪个子Agent
-- 处理工作流中断与恢复
+- 依赖注入管理：管理子Agent的创建和注入
+- 高层API封装：提供简洁的process()接口
+- 响应处理：提取和格式化最终响应
+- 错误协调：协调工作流错误，生成降级响应
+
+**已移至Workflow类的职责**：
+- 工作流控制逻辑（process_with_events, resume_with_events）
+- 节点元数据定义（NODE_METADATA）
+- 事件发送逻辑
 
 **关键方法**：
 
@@ -268,22 +279,20 @@ Supply_Chain_Agent/
 class OrchestratorAgent:
     async def process(self, user_input: str, thread_id: str) -> Dict[str, Any]:
         """
-        主处理流程：
-        1. 检查是否从clarification恢复
-        2. 启动/恢复LangGraph工作流
-        3. 检查interrupt信息
-        4. 提取并返回响应
+        主处理流程（委托给process_with_callback）
         """
     
     async def process_with_callback(self, user_input: str, callback: Callable):
         """
-        带事件回调的处理流程，用于WebSocket实时推送
+        委托给Workflow的事件处理方法
+        1. 检查是否从clarification恢复
+        2. 调用workflow.process_with_events()或workflow.resume_with_events()
+        3. 检查interrupt信息
+        4. 提取并返回响应
         """
     
-    async def _process_workflow_with_events(self, user_input: str, emit_event: Callable):
-        """
-        逐步执行工作流并发送事件
-        """
+    def _extract_interrupt_info(self, interrupt_info: Any) -> tuple:
+        """提取中断信息"""
 ```
 
 **依赖注入设计**：
@@ -295,6 +304,7 @@ def __init__(self,
              report_generator: Optional[ReportGenerator] = None):
     """
     支持依赖注入，便于测试和解耦
+    通过ServiceContainer获取依赖
     """
 ```
 
@@ -312,9 +322,36 @@ def __init__(self,
 
 | 层级 | 组件 | 职责 | 触发条件 |
 |------|------|------|----------|
-| **第一层** | 规则引擎 | 意图模式匹配（一级+二级）+ 置信度计算 | 始终执行 |
-| **第二层** | BERT NER | 实体提取 | 规则命中且BERT模型可用 |
-| **第三层** | LLM | 意图分类 + 实体提取 | 规则未命中/置信度低/实体为空 |
+| **第一层** | 规则引擎 | 意图模式匹配（一级+二级）+ 规则实体提取 + 置信度计算 | 始终执行 |
+| **第二层** | BERT NER | NER实体提取 | `_should_trigger_ner()`: 置信度<0.75 或 实体为空 |
+| **第三层** | LLM | 意图分类 + 实体提取 | `_should_trigger_llm()`: 置信度<0.7 或 需要实体但无实体 |
+
+**明确的三层触发条件判断**：
+```python
+def _can_skip_further_layers(self, confidence, entities, intent_level_1, intent_level_2) -> bool:
+    """判断是否可以跳过后续层（快速路径）"""
+    # 条件：置信度 >= 0.75 且有实体，或意图类型不需要复杂实体提取
+
+def _should_trigger_ner(self, confidence, entities) -> bool:
+    """判断是否触发NER层"""
+    # 条件：置信度 < 0.75 或 实体为空
+
+def _should_trigger_llm(self, confidence, entities, intent_level_1, intent_level_2) -> bool:
+    """判断是否触发LLM层"""
+    # 条件：置信度 < 0.7 或 需要实体但无实体
+```
+
+**分离的实体提取方法**：
+```python
+def _extract_entities_by_rules(self, text, intent_level_1) -> List[Dict]:
+    """仅使用规则提取实体（第一层）"""
+
+def _extract_entities_by_ner(self, text, intent_level_1) -> List[Dict]:
+    """仅使用BERT NER提取实体（第二层）"""
+
+def _merge_entities(self, base_entities, new_entities) -> List[Dict]:
+    """合并实体列表，避免重复"""
+```
 
 **任务分类体系**：
 

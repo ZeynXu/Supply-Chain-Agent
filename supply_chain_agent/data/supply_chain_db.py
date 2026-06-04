@@ -12,9 +12,22 @@ import pandas as pd
 import os
 import yaml
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, List as TypingList
 from contextlib import contextmanager
 from datetime import datetime
+
+# M37修复：从统一位置导入有效值定义
+from supply_chain_agent.common.valid_values import (
+    VALID_WORK_TYPES,
+    VALID_PRIORITIES,
+    VALID_WORK_ORDER_STATUSES,
+    VALID_ISSUE_TYPES,
+    VALID_URGENCIES,
+    VALID_WORK_TYPES_SET,
+    VALID_PRIORITIES_SET,
+    VALID_ISSUE_TYPES_SET,
+    VALID_URGENCIES_SET,
+)
 
 
 # Database path
@@ -22,6 +35,20 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "supply_chain.db")
 
 # Data directory (relative to project root)
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "dataset")
+
+# Connection pool configuration
+_MAX_POOL_SIZE = 10
+_connection_pool: List[sqlite3.Connection] = []
+_pool_lock = None  # Lazy initialization for thread safety
+
+
+def _get_pool_lock():
+    """Get or create the pool lock for thread safety."""
+    global _pool_lock
+    if _pool_lock is None:
+        import threading
+        _pool_lock = threading.Lock()
+    return _pool_lock
 
 
 def get_db_path() -> str:
@@ -31,13 +58,42 @@ def get_db_path() -> str:
 
 @contextmanager
 def get_connection():
-    """Get a database connection context manager."""
-    conn = sqlite3.connect(DB_PATH)
+    """Get a database connection from pool (with connection pooling)."""
+    lock = _get_pool_lock()
+    conn = None
+
+    # Try to get a connection from pool
+    with lock:
+        if _connection_pool:
+            conn = _connection_pool.pop()
+
+    # Create new connection if pool is empty
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+
     conn.row_factory = sqlite3.Row
     try:
         yield conn
     finally:
-        conn.close()
+        # Return connection to pool
+        with lock:
+            if len(_connection_pool) < _MAX_POOL_SIZE:
+                try:
+                    # Test connection before returning to pool
+                    conn.execute("SELECT 1")
+                    _connection_pool.append(conn)
+                except Exception:
+                    # Connection is broken, close it
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+            else:
+                # Pool is full, close the connection
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
 
 def create_schema():
@@ -229,9 +285,27 @@ def create_schema():
         print("✓ Database schema created successfully")
 
 
-def import_csv_data(csv_path: str):
-    """Import CSV data into the database."""
+def import_csv_data(csv_path: str) -> Dict[str, Any]:
+    """
+    Import CSV data into the database.
+
+    L13修复：返回详细的导入结果，包括失败行信息。
+
+    Returns:
+        Dict包含:
+        - success: 是否成功
+        - imported: 各表导入数量
+        - errors: 错误详情列表
+        - total_rows: CSV总行数
+    """
     print(f"Importing data from {csv_path}...")
+
+    result = {
+        "success": False,
+        "imported": {},
+        "errors": [],
+        "total_rows": 0
+    }
 
     # Read CSV with multiple encoding attempts
     df = None
@@ -243,12 +317,15 @@ def import_csv_data(csv_path: str):
         except UnicodeDecodeError:
             continue
         except Exception as e:
-            print(f"  Error with {encoding}: {e}")
+            result["errors"].append(f"编码 {encoding} 读取失败: {str(e)}")
             continue
 
     if df is None:
-        raise ValueError(f"Failed to read CSV file with any encoding: {csv_path}")
+        error_msg = f"Failed to read CSV file with any encoding: {csv_path}"
+        result["errors"].append(error_msg)
+        raise ValueError(error_msg)
 
+    result["total_rows"] = len(df)
     print(f"  Total rows in CSV: {len(df)}")
 
     # Normalize column names: replace spaces with underscores
@@ -256,84 +333,120 @@ def import_csv_data(csv_path: str):
 
     with get_connection() as conn:
         # Import customers (unique customers)
-        customers_df = df[[
-            'Customer_Id', 'Customer_Fname', 'Customer_Lname', 'Customer_Email',
-            'Customer_Segment', 'Customer_City', 'Customer_Country', 'Customer_State',
-            'Customer_Street', 'Customer_Zipcode', 'Latitude', 'Longitude'
-        ]].drop_duplicates(subset=['Customer_Id'])
+        try:
+            customers_df = df[[
+                'Customer_Id', 'Customer_Fname', 'Customer_Lname', 'Customer_Email',
+                'Customer_Segment', 'Customer_City', 'Customer_Country', 'Customer_State',
+                'Customer_Street', 'Customer_Zipcode', 'Latitude', 'Longitude'
+            ]].drop_duplicates(subset=['Customer_Id'])
 
-        customers_df.to_sql('customers', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(customers_df)} customers")
+            customers_df.to_sql('customers', conn, if_exists='replace', index=False)
+            result["imported"]["customers"] = len(customers_df)
+            print(f"  ✓ Imported {len(customers_df)} customers")
+        except Exception as e:
+            result["errors"].append(f"导入customers失败: {str(e)}")
 
         # Import categories (unique categories)
-        categories_df = df[['Category_Id', 'Category_Name']].drop_duplicates(subset=['Category_Id'])
-        categories_df.to_sql('categories', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(categories_df)} categories")
+        try:
+            categories_df = df[['Category_Id', 'Category_Name']].drop_duplicates(subset=['Category_Id'])
+            categories_df.to_sql('categories', conn, if_exists='replace', index=False)
+            result["imported"]["categories"] = len(categories_df)
+            print(f"  ✓ Imported {len(categories_df)} categories")
+        except Exception as e:
+            result["errors"].append(f"导入categories失败: {str(e)}")
 
         # Import departments (unique departments)
-        departments_df = df[['Department_Id', 'Department_Name']].drop_duplicates(subset=['Department_Id'])
-        departments_df.to_sql('departments', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(departments_df)} departments")
+        try:
+            departments_df = df[['Department_Id', 'Department_Name']].drop_duplicates(subset=['Department_Id'])
+            departments_df.to_sql('departments', conn, if_exists='replace', index=False)
+            result["imported"]["departments"] = len(departments_df)
+            print(f"  ✓ Imported {len(departments_df)} departments")
+        except Exception as e:
+            result["errors"].append(f"导入departments失败: {str(e)}")
 
         # Import products (unique products)
-        products_df = df[[
-            'Product_Card_Id', 'Product_Name', 'Product_Price', 'Product_Status', 'Product_Category_Id'
-        ]].drop_duplicates(subset=['Product_Card_Id'])
-        products_df.to_sql('products', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(products_df)} products")
+        try:
+            products_df = df[[
+                'Product_Card_Id', 'Product_Name', 'Product_Price', 'Product_Status', 'Product_Category_Id'
+            ]].drop_duplicates(subset=['Product_Card_Id'])
+            products_df.to_sql('products', conn, if_exists='replace', index=False)
+            result["imported"]["products"] = len(products_df)
+            print(f"  ✓ Imported {len(products_df)} products")
+        except Exception as e:
+            result["errors"].append(f"导入products失败: {str(e)}")
 
         # Import orders (unique orders)
-        orders_df = df[[
-            'Order_Id', 'Order_Customer_Id', 'order_date_(DateOrders)', 'Order_Status',
-            'Order_City', 'Order_Country', 'Order_Region', 'Order_State', 'Order_Zipcode',
-            'Delivery_Status', 'Late_delivery_risk', 'Type', 'Market',
-            'Benefit_per_order', 'Sales_per_customer', 'Order_Profit_Per_Order'
-        ]].drop_duplicates(subset=['Order_Id'])
+        try:
+            orders_df = df[[
+                'Order_Id', 'Order_Customer_Id', 'order_date_(DateOrders)', 'Order_Status',
+                'Order_City', 'Order_Country', 'Order_Region', 'Order_State', 'Order_Zipcode',
+                'Delivery_Status', 'Late_delivery_risk', 'Type', 'Market',
+                'Benefit_per_order', 'Sales_per_customer', 'Order_Profit_Per_Order'
+            ]].drop_duplicates(subset=['Order_Id'])
 
-        # Rename columns for database
-        orders_df.columns = [
-            'order_id', 'customer_id', 'order_date', 'order_status',
-            'order_city', 'order_country', 'order_region', 'order_state', 'order_zipcode',
-            'delivery_status', 'late_delivery_risk', 'type', 'market',
-            'benefit_per_order', 'sales_per_customer', 'order_profit_per_order'
-        ]
-        orders_df.to_sql('orders', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(orders_df)} orders")
+            # Rename columns for database
+            orders_df.columns = [
+                'order_id', 'customer_id', 'order_date', 'order_status',
+                'order_city', 'order_country', 'order_region', 'order_state', 'order_zipcode',
+                'delivery_status', 'late_delivery_risk', 'type', 'market',
+                'benefit_per_order', 'sales_per_customer', 'order_profit_per_order'
+            ]
+            orders_df.to_sql('orders', conn, if_exists='replace', index=False)
+            result["imported"]["orders"] = len(orders_df)
+            print(f"  ✓ Imported {len(orders_df)} orders")
+        except Exception as e:
+            result["errors"].append(f"导入orders失败: {str(e)}")
 
         # Import order items
-        order_items_df = df[[
-            'Order_Item_Id', 'Order_Id', 'Product_Card_Id', 'Order_Item_Discount',
-            'Order_Item_Discount_Rate', 'Order_Item_Product_Price', 'Order_Item_Profit_Ratio',
-            'Order_Item_Quantity', 'Sales', 'Order_Item_Total', 'Benefit_per_order', 'Sales_per_customer'
-        ]]
+        try:
+            order_items_df = df[[
+                'Order_Item_Id', 'Order_Id', 'Product_Card_Id', 'Order_Item_Discount',
+                'Order_Item_Discount_Rate', 'Order_Item_Product_Price', 'Order_Item_Profit_Ratio',
+                'Order_Item_Quantity', 'Sales', 'Order_Item_Total', 'Benefit_per_order', 'Sales_per_customer'
+            ]]
 
-        order_items_df.columns = [
-            'order_item_id', 'order_id', 'product_card_id', 'order_item_discount',
-            'order_item_discount_rate', 'order_item_product_price', 'order_item_profit_ratio',
-            'order_item_quantity', 'sales', 'order_item_total', 'benefit_per_order', 'sales_per_customer'
-        ]
-        order_items_df.to_sql('order_items', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(order_items_df)} order items")
+            order_items_df.columns = [
+                'order_item_id', 'order_id', 'product_card_id', 'order_item_discount',
+                'order_item_discount_rate', 'order_item_product_price', 'order_item_profit_ratio',
+                'order_item_quantity', 'sales', 'order_item_total', 'benefit_per_order', 'sales_per_customer'
+            ]
+            order_items_df.to_sql('order_items', conn, if_exists='replace', index=False)
+            result["imported"]["order_items"] = len(order_items_df)
+            print(f"  ✓ Imported {len(order_items_df)} order items")
+        except Exception as e:
+            result["errors"].append(f"导入order_items失败: {str(e)}")
 
         # Import shipping
-        shipping_df = df[[
-            'Order_Id', 'Days_for_shipping_(real)', 'Days_for_shipment_(scheduled)',
-            'Shipping_Mode', 'shipping_date_(DateOrders)'
-        ]]
-        shipping_df.columns = [
-            'order_id', 'days_for_shipping_real', 'days_for_shipment_scheduled',
-            'shipping_mode', 'shipping_date'
-        ]
-        # Add unique id
-        shipping_df = shipping_df.reset_index()
-        shipping_df.columns = ['id', 'order_id', 'days_for_shipping_real', 'days_for_shipment_scheduled',
-                               'shipping_mode', 'shipping_date']
-        shipping_df.to_sql('shipping', conn, if_exists='replace', index=False)
-        print(f"  ✓ Imported {len(shipping_df)} shipping records")
+        try:
+            shipping_df = df[[
+                'Order_Id', 'Days_for_shipping_(real)', 'Days_for_shipment_(scheduled)',
+                'Shipping_Mode', 'shipping_date_(DateOrders)'
+            ]]
+            shipping_df.columns = [
+                'order_id', 'days_for_shipping_real', 'days_for_shipment_scheduled',
+                'shipping_mode', 'shipping_date'
+            ]
+            # Add unique id
+            shipping_df = shipping_df.reset_index()
+            shipping_df.columns = ['id', 'order_id', 'days_for_shipping_real', 'days_for_shipment_scheduled',
+                                   'shipping_mode', 'shipping_date']
+            shipping_df.to_sql('shipping', conn, if_exists='replace', index=False)
+            result["imported"]["shipping"] = len(shipping_df)
+            print(f"  ✓ Imported {len(shipping_df)} shipping records")
+        except Exception as e:
+            result["errors"].append(f"导入shipping失败: {str(e)}")
 
         conn.commit()
 
-    print("✓ Data import completed successfully")
+    result["success"] = len(result["errors"]) == 0
+    if result["success"]:
+        print("✓ Data import completed successfully")
+    else:
+        print(f"⚠️ Data import completed with {len(result['errors'])} errors:")
+        for err in result["errors"]:
+            print(f"  - {err}")
+
+    return result
 
 
 def load_entity_mappings(csv_path: str = None):
@@ -606,45 +719,32 @@ def get_customer_statistics(customer_id: int) -> Dict[str, Any]:
     - late_delivery_rate: delayed_orders / total_orders
     - current_occupied_amount: Sum of order_item_total for pending orders
     - current_pending_orders: Count of pending orders
+
+    M25修复：将5次独立SQL查询合并为2次，提高查询效率。
     """
     with get_connection() as conn:
         cursor = conn.cursor()
 
-        # Total orders and sales
+        # 查询1：合并订单统计（总数、销售额、利润、延迟数、取消数）
         cursor.execute("""
             SELECT
                 COUNT(*) as total_orders,
                 MAX(sales_per_customer) as total_sales,
-                AVG(order_profit_per_order) as avg_order_profit
+                AVG(order_profit_per_order) as avg_order_profit,
+                SUM(CASE WHEN late_delivery_risk = 1 THEN 1 ELSE 0 END) as delayed_orders,
+                SUM(CASE WHEN delivery_status = 'Shipping canceled' THEN 1 ELSE 0 END) as cancelled_orders
             FROM orders
             WHERE customer_id = ?
         """, (customer_id,))
 
         row = cursor.fetchone()
-        total_orders = row[0] if row else 0
+        total_orders = row[0] if row and row[0] else 0
         total_sales = row[1] if row and row[1] else 0
         avg_order_profit = row[2] if row and row[2] else 0
+        delayed_orders = row[3] if row and row[3] else 0
+        cancelled_orders = row[4] if row and row[4] else 0
 
-        # Delayed orders - late_delivery_risk is in orders table
-        cursor.execute("""
-            SELECT COUNT(*) as delayed_orders
-            FROM orders
-            WHERE customer_id = ? AND late_delivery_risk = 1
-        """, (customer_id,))
-
-        delayed_orders = cursor.fetchone()[0]
-
-        # Cancelled orders
-        cursor.execute("""
-            SELECT COUNT(*) as cancelled_orders
-            FROM orders
-            WHERE customer_id = ? AND delivery_status = 'Shipping canceled'
-        """, (customer_id,))
-
-        cancelled_orders = cursor.fetchone()[0]
-
-        # Current pending orders and occupied amount
-        # Pending statuses: PENDING, PROCESSING, PENDING_PAYMENT, PAYMENT_REVIEW, ON_HOLD
+        # 查询2：待处理订单统计（数量和占用金额）
         pending_statuses = ('PENDING', 'PROCESSING', 'PENDING_PAYMENT', 'PAYMENT_REVIEW', 'ON_HOLD')
 
         cursor.execute("""
@@ -682,8 +782,15 @@ def get_statistics() -> Dict[str, Any]:
 
         stats = {}
 
-        # Count records in each table
-        for table in ['customers', 'categories', 'departments', 'products', 'orders', 'order_items', 'shipping', 'work_orders', 'issues']:
+        # M32修复：使用白名单验证表名，防止SQL注入
+        # 表名白名单（硬编码，不来自用户输入）
+        ALLOWED_TABLES = frozenset([
+            'customers', 'categories', 'departments', 'products',
+            'orders', 'order_items', 'shipping', 'work_orders', 'issues'
+        ])
+
+        for table in ALLOWED_TABLES:
+            # 白名单验证通过，可以安全拼接
             cursor.execute(f"SELECT COUNT(*) FROM {table}")
             stats[table] = cursor.fetchone()[0]
 
@@ -782,14 +889,7 @@ WORK_TYPE_ASSIGNMENT = {
     "其他": "综合事务组"
 }
 
-# Valid work types
-VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
-
-# Valid priorities
-VALID_PRIORITIES = ["高", "中", "低"]
-
-# Valid work order statuses
-VALID_WORK_ORDER_STATUSES = ["待处理", "待审批", "处理中", "已通过", "已拒绝", "已关闭"]
+# M37修复：有效值定义已移至 common/valid_values.py
 
 
 def generate_work_order_id() -> str:
@@ -837,11 +937,11 @@ def create_work_order(
     Raises:
         ValueError: If validate=True and work_type or priority is invalid
     """
-    # Validate if requested
+    # Validate if requested (M37修复：使用SET版本快速查找)
     if validate:
-        if work_type not in VALID_WORK_TYPES:
+        if work_type not in VALID_WORK_TYPES_SET:
             raise ValueError(f"无效的工单类型: {work_type}，有效类型: {VALID_WORK_TYPES}")
-        if priority not in VALID_PRIORITIES:
+        if priority not in VALID_PRIORITIES_SET:
             raise ValueError(f"无效的优先级: {priority}，有效优先级: {VALID_PRIORITIES}")
 
     # Auto-assign if not specified
@@ -1077,11 +1177,7 @@ def add_work_order_timeline_event(work_order_id: str, actor: str, action: str) -
 
 # ============== Issue Functions ==============
 
-# Valid issue types
-VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
-
-# Valid urgency levels
-VALID_URGENCIES = ["高", "中", "低"]
+# M37修复：有效值定义已移至 common/valid_values.py
 
 # Issue type to assigned group mapping
 ISSUE_TYPE_ASSIGNMENT = {
@@ -1137,11 +1233,11 @@ def report_issue(
     Raises:
         ValueError: If validate=True and issue_type or urgency is invalid
     """
-    # Validate if requested
+    # Validate if requested (M37修复：使用SET版本快速查找)
     if validate:
-        if issue_type not in VALID_ISSUE_TYPES:
+        if issue_type not in VALID_ISSUE_TYPES_SET:
             raise ValueError(f"无效的问题类型: {issue_type}，有效类型: {VALID_ISSUE_TYPES}")
-        if urgency not in VALID_URGENCIES:
+        if urgency not in VALID_URGENCIES_SET:
             raise ValueError(f"无效的紧急程度: {urgency}，有效紧急程度: {VALID_URGENCIES}")
 
     # Auto-assign based on issue type

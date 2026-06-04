@@ -32,10 +32,15 @@ from supply_chain_agent.data.supply_chain_db import (
     approve_work_order as _approve_work_order_db,
     get_work_order,
     report_issue as _report_issue_db,
+)
+
+# M37修复：从统一位置导入有效值定义
+from supply_chain_agent.common.valid_values import (
     VALID_WORK_TYPES,
     VALID_PRIORITIES,
     VALID_ISSUE_TYPES,
     VALID_URGENCIES,
+    VALID_APPROVE_ACTIONS,
 )
 
 
@@ -95,13 +100,25 @@ class MCPServer:
                         message=f"客户 {customer_id} 不存在"
                     ).to_dict()
 
-                # Mask email for privacy
+                # Mask email for privacy (M34修复：完整掩码，隐藏域名)
                 email = customer.get("Customer_Email", "")
                 if email and "@" in email:
                     parts = email.split("@")
-                    masked_email = f"{parts[0][0]}***@{parts[1]}"
+                    # 完全隐藏用户名，只显示首字符，隐藏域名
+                    username = parts[0]
+                    domain = parts[1]
+                    # 用户名只显示首字符，其余用***替代
+                    masked_username = f"{username[0]}{'*' * min(len(username)-1, 3)}"
+                    # 域名只显示首字符和TLD，中间用***替代
+                    domain_parts = domain.split(".")
+                    if len(domain_parts) >= 2:
+                        tld = domain_parts[-1]
+                        masked_domain = f"{domain_parts[0][0]}***.{tld}"
+                    else:
+                        masked_domain = "***.com"
+                    masked_email = f"{masked_username}@{masked_domain}"
                 else:
-                    masked_email = "***@example.com"
+                    masked_email = "***@***.com"
 
                 return {
                     "customer_id": customer.get("Customer_Id"),

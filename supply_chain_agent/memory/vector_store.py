@@ -5,6 +5,31 @@ Implements three-layer memory system:
 1. Short-term memory: Sliding window with summarization
 2. Working memory: LangGraph shared state
 3. Long-term memory: Vector store + SQLite for RAG
+
+M7修复：三层内存设计说明
+=========================
+虽然三层设计看似复杂，但各有明确职责：
+
+**短期记忆 (ShortTermMemory)**:
+- 用途：存储最近N轮对话，提供上下文连续性
+- 实现：滑动窗口（默认20条），超出时生成摘要
+- 场景：多轮对话中的指代消解、上下文关联
+
+**工作记忆 (Working Memory)**:
+- 用途：当前请求处理过程中的临时状态
+- 实现：LangGraph AgentState（28个字段的状态字典）
+- 场景：单次请求内各节点间的数据传递
+
+**长期记忆 (LongTermMemory)**:
+- 用途：跨会话知识检索（SOP/FAQ/历史案例）
+- 实现：ChromaDB向量存储 + SQLite元数据
+- 场景：复杂问题需要参考历史解决方案
+
+**设计权衡**:
+- 短期与工作记忆确实有功能重叠，但分离设计便于：
+  1. 短期记忆可跨会话持久化
+  2. 工作记忆由LangGraph管理，自动checkpoint
+- SOP/FAQ检索使用较少是预期行为，仅在复杂场景触发
 """
 
 import sqlite3
@@ -238,8 +263,15 @@ class LongTermMemory:
                 success_count INTEGER DEFAULT 0,
                 failure_count INTEGER DEFAULT 0,
                 total_time_ms INTEGER DEFAULT 0,
-                last_used DATETIME
+                last_used DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
+        """)
+
+        # L14修复：添加时间索引以提高按时间查询效率
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_tool_usage_last_used
+            ON tool_usage_stats(last_used)
         """)
 
         conn.commit()
@@ -285,20 +317,27 @@ class LongTermMemory:
         conn.commit()
         conn.close()
 
-    def search_sop(self, query: str, limit: int = 2) -> List[Dict[str, Any]]:
+    def search_sop(self, query: str, limit: int = 2, intent_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search SOP manuals.
 
         Args:
             query: Search query
             limit: Maximum results
+            intent_type: M26修复：意图类型过滤（可选）
 
         Returns:
             List of SOP items
         """
+        # M26修复：添加预过滤条件
+        where_filter = None
+        if intent_type:
+            where_filter = {"intent_type": intent_type}
+
         results = self.sop_collection.query(
             query_texts=[query],
-            n_results=limit
+            n_results=limit,
+            where=where_filter
         )
 
         sops = []
@@ -312,20 +351,27 @@ class LongTermMemory:
 
         return sops
 
-    def search_faq(self, query: str, limit: int = 3) -> List[Dict[str, Any]]:
+    def search_faq(self, query: str, limit: int = 3, category: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search FAQs.
 
         Args:
             query: Search query
             limit: Maximum results
+            category: M26修复：FAQ分类过滤（可选）
 
         Returns:
             List of FAQ items
         """
+        # M26修复：添加预过滤条件
+        where_filter = None
+        if category:
+            where_filter = {"category": category}
+
         results = self.faq_collection.query(
             query_texts=[query],
-            n_results=limit
+            n_results=limit,
+            where=where_filter
         )
 
         faqs = []
@@ -556,23 +602,53 @@ class LongTermMemory:
 class MemoryManager:
     """
     Manages all three memory layers.
+
+    M27修复：延迟初始化向量存储，避免阻塞服务启动。
     """
 
-    def __init__(self, load_sop_on_init: bool = True):
-        self.short_term = ShortTermMemory(
-            window_size=settings.memory_window_size
-        )
-        self.long_term = LongTermMemory(
-            vector_store_path=settings.vector_store_path,
-            sqlite_db_path=settings.sqlite_db_path
-        )
+    def __init__(self, load_sop_on_init: bool = False):
+        """
+        Initialize MemoryManager with lazy loading.
 
-        # Check if SOP data is already loaded
+        Args:
+            load_sop_on_init: 是否在初始化时检查SOP数据（默认False，延迟加载）
+        """
+        self._short_term = None
+        self._long_term = None
+        self._window_size = settings.memory_window_size
+        self._vector_store_path = settings.vector_store_path
+        self._sqlite_db_path = settings.sqlite_db_path
+        self._sop_checked = False
+
+        # 仅在明确要求时同步检查SOP
         if load_sop_on_init:
+            self._check_sop_data()
+
+    @property
+    def short_term(self):
+        """延迟初始化短期记忆"""
+        if self._short_term is None:
+            self._short_term = ShortTermMemory(window_size=self._window_size)
+        return self._short_term
+
+    @property
+    def long_term(self):
+        """延迟初始化长期记忆"""
+        if self._long_term is None:
+            self._long_term = LongTermMemory(
+                vector_store_path=self._vector_store_path,
+                sqlite_db_path=self._sqlite_db_path
+            )
+        return self._long_term
+
+    def _check_sop_data(self):
+        """检查SOP数据是否已加载"""
+        if not self._sop_checked:
             if not self.long_term.has_sop_data():
                 print("⚠️ No SOP data found in vector store. Run data initialization.")
             else:
                 print("✅ SOP data already loaded in vector store")
+            self._sop_checked = True
 
     def record_agent_action(self, agent_name: str, action: str,
                            details: Dict[str, Any], importance: float = 0.5):
@@ -662,5 +738,24 @@ class MemoryManager:
         return "\n".join(sections)
 
 
-# Global memory manager instance
-memory_manager = MemoryManager()
+# H4修复：使用getter函数管理单例
+_memory_manager_instance: Optional["MemoryManager"] = None
+
+
+def get_memory_manager() -> "MemoryManager":
+    """获取内存管理器单例"""
+    global _memory_manager_instance
+    if _memory_manager_instance is None:
+        _memory_manager_instance = MemoryManager()
+    return _memory_manager_instance
+
+
+def reset_memory_manager():
+    """重置内存管理器单例（用于测试）"""
+    global _memory_manager_instance
+    _memory_manager_instance = None
+
+
+# 向后兼容：初始化默认实例
+# 注意：新代码应使用 get_memory_manager()，测试时使用 reset_memory_manager()
+memory_manager = get_memory_manager()

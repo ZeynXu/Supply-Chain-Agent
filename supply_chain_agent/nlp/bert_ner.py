@@ -301,6 +301,14 @@ def get_ner_model(use_bert: bool = True) -> BertNERModel:
     return _ner_instance
 
 
+def reset_ner_model():
+    """
+    H4修复：重置NER模型单例（用于测试）
+    """
+    global _ner_instance
+    _ner_instance = None
+
+
 def extract_entities(text: str, intent_level_1: str = None) -> List[Dict[str, Any]]:
     """
     Convenience function for entity extraction.

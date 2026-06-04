@@ -31,3 +31,51 @@ FALLBACK_RESPONSE_PROMPT = """你是一个供应链系统的客服助手。系�
 
 请生成降级响应：
 """
+
+
+# L7修复：工具参数提取降级Prompt（当prompts模块不可用时的备用模板）
+TOOL_PARAM_EXTRACTION_FALLBACK = """你是一个供应链系统的参数提取专家。请根据当前工具的执行结果，为下一个工具提取或生成所需的参数。
+
+## 当前执行状态
+- 执行计划: {execution_plan}
+- 已执行工具: {executed_tools}
+- 当前步骤: {current_step}
+
+## 当前工具执行结果
+工具名称: {current_tool}
+执行结果:
+```json
+{current_result}
+```
+
+## 下一个要执行的工具
+工具名称: {next_tool}
+必需参数: {required_params}
+可选参数: {optional_params}
+
+## 当前已有的槽位信息
+```json
+{current_slots}
+```
+
+## 任务
+请分析当前工具的执行结果，为下一个工具提取或生成所需的参数。
+- 优先从执行结果中提取参数值
+- 如果执行结果中没有所需参数，尝试从已有槽位中获取
+- 如果是工单查询结果，注意提取 customer_id、order_id 等关联信息
+- 只返回下一个工具实际需要的参数
+
+请直接输出JSON格式的结果，格式如下：
+```json
+{{
+  "parameters": {{
+    "参数名": "参数值"
+  }}
+}}
+```
+
+注意：
+1. 只输出JSON，不要包含其他文字说明
+2. 参数值要准确，从执行结果中提取时要保持原始格式
+3. 如果某个必需参数无法从结果中获取，可以在parameters中设为null
+"""

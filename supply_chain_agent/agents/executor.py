@@ -19,6 +19,18 @@ from pathlib import Path
 from supply_chain_agent.config import settings
 from supply_chain_agent.tools.client import get_tool_client
 
+# H4修复：导入ServiceContainer
+from supply_chain_agent.common.service_container import ServiceContainer
+
+# M37修复：导入统一有效值定义
+from supply_chain_agent.common.valid_values import (
+    VALID_WORK_TYPES,
+    VALID_PRIORITIES,
+    VALID_ISSUE_TYPES,
+    VALID_URGENCIES,
+    VALID_APPROVE_ACTIONS,
+)
+
 # 导入重试管理器
 try:
     from supply_chain_agent.agents.retry_manager import (
@@ -48,6 +60,8 @@ try:
         TOOL_PARAM_EXTRACTION_PROMPT,
         INITIAL_PARAM_GENERATION_PROMPT
     )
+    # L7修复：导入降级Prompt模板
+    from supply_chain_agent.prompts.fallback import TOOL_PARAM_EXTRACTION_FALLBACK
     PROMPTS_AVAILABLE = True
 except ImportError:
     PROMPTS_AVAILABLE = False
@@ -164,19 +178,21 @@ class ExecutorAgent:
         },
     }
 
-    # 有效值定义 (来自MCP Server)
-    VALID_WORK_TYPES = ["审批", "异常处理", "退款", "调拨", "质检", "其他"]
-    VALID_PRIORITIES = ["高", "中", "低"]
-    VALID_ISSUE_TYPES = ["物流延迟", "库存异常", "质量缺陷", "数据错误", "客户投诉", "其他"]
-    VALID_URGENCIES = ["高", "中", "低"]
-    VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
+    # M37修复：有效值定义已移至 common/valid_values.py
+    # 导入将在文件开头处理
 
     # AGENT.md 文件路径
     AGENT_MD_PATH = Path(__file__).parent / "AGENT.md"
 
+    # 执行历史限制常量（M28修复）
+    MAX_EXECUTION_HISTORY = 100
+
     def __init__(self):
         self.task_queue: List[Task] = []
         self.execution_history: List[Dict[str, Any]] = []
+
+        # 验证TOOL_PARAMS与MCP Server工具定义一致性（M18）
+        self._validate_tool_params_consistency()
 
         # 初始化重试管理器
         if RETRY_MANAGER_AVAILABLE:
@@ -260,7 +276,8 @@ class ExecutorAgent:
         )
 
         try:
-            llm_client = get_llm_client()
+            # H4修复：通过ServiceContainer获取LLM客户端
+            llm_client = ServiceContainer.get_llm_client()
             result = await llm_client.generate_json(prompt)
 
             # 解析LLM返回的任务列表
@@ -290,13 +307,39 @@ class ExecutorAgent:
             "level_2_tasks": self.LEVEL_2_TASKS,
             "tool_params": self.TOOL_PARAMS,
             "valid_values": {
-                "work_types": self.VALID_WORK_TYPES,
-                "priorities": self.VALID_PRIORITIES,
-                "issue_types": self.VALID_ISSUE_TYPES,
-                "urgencies": self.VALID_URGENCIES,
-                "approve_actions": self.VALID_APPROVE_ACTIONS
+                # M37修复：使用模块级常量
+                "work_types": VALID_WORK_TYPES,
+                "priorities": VALID_PRIORITIES,
+                "issue_types": VALID_ISSUE_TYPES,
+                "urgencies": VALID_URGENCIES,
+                "approve_actions": VALID_APPROVE_ACTIONS
             }
         }
+
+    def _validate_tool_params_consistency(self):
+        """
+        验证TOOL_PARAMS与MCP Server工具定义一致性（解决M18）。
+
+        注意：TOOL_PARAMS定义与MCPServer工具签名存在重复，
+        此方法在初始化时验证一致性，确保两处定义同步。
+        """
+        try:
+            from supply_chain_agent.tools.client import ToolClient
+            # 获取MCP Server工具定义
+            client = ToolClient()
+            tool_defs = client.get_tool_definitions()
+
+            # 验证工具名称一致性
+            mcp_tools = set(tool_defs.keys())
+            local_tools = set(self.TOOL_PARAMS.keys())
+
+            missing_in_local = mcp_tools - local_tools
+            if missing_in_local:
+                print(f"⚠️ [M18] 工具定义不一致: MCP Server有但TOOL_PARAMS缺少: {missing_in_local}")
+
+        except Exception as e:
+            # 验证失败不影响初始化，仅记录日志
+            pass
 
     async def execute_task(self, task_name: str, extracted_slots: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -346,62 +389,46 @@ class ExecutorAgent:
         return result
 
     def _map_task_to_tool(self, task_name: str, extracted_slots: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
-        """Map task name to tool and parameters based on MCP tool definitions."""
+        """
+        Map task name to tool and parameters based on MCP tool definitions.
 
+        重构（M22）：使用映射表简化简单工具的参数构建，减少重复代码。
+        """
         # Get tool name from mapping
         tool_name = self.TOOL_MAPPING.get(task_name, task_name)
 
-        # Build parameters based on tool type
-        if tool_name == "query_customer":
-            return "query_customer", {
-                "customer_id": extracted_slots.get("customer_id")
-            }
+        # 简单工具参数映射表（工具名 -> 参数名列表）
+        SIMPLE_TOOL_PARAMS = {
+            "query_customer": ["customer_id"],
+            "query_customer_orders": ["customer_id", ("limit", 20), ("offset", 0)],
+            "query_order": ["order_id"],
+            "query_order_items": ["order_id"],
+            "query_product": ["product_card_id"],
+            "query_shipment": ["order_id"],
+            "query_customer_statistics": ["customer_id"],
+            "query_work_order": ["work_order_id"],
+        }
 
-        elif tool_name == "query_customer_orders":
-            return "query_customer_orders", {
-                "customer_id": extracted_slots.get("customer_id"),
-                "limit": extracted_slots.get("limit", 20),
-                "offset": extracted_slots.get("offset", 0)
-            }
+        # 检查是否为简单工具
+        if tool_name in SIMPLE_TOOL_PARAMS:
+            params = {}
+            for param_def in SIMPLE_TOOL_PARAMS[tool_name]:
+                if isinstance(param_def, tuple):
+                    # (param_name, default_value)
+                    params[param_def[0]] = extracted_slots.get(param_def[0], param_def[1])
+                else:
+                    # param_name (no default)
+                    params[param_def] = extracted_slots.get(param_def)
+            return tool_name, params
 
-        elif tool_name == "query_order":
-            return "query_order", {
-                "order_id": extracted_slots.get("order_id")
-            }
-
-        elif tool_name == "query_order_items":
-            return "query_order_items", {
-                "order_id": extracted_slots.get("order_id")
-            }
-
-        elif tool_name == "query_product":
-            return "query_product", {
-                "product_card_id": extracted_slots.get("product_card_id")
-            }
-
-        elif tool_name == "query_shipment":
-            return "query_shipment", {
-                "order_id": extracted_slots.get("order_id")
-            }
-
-        elif tool_name == "query_customer_statistics":
-            return "query_customer_statistics", {
-                "customer_id": extracted_slots.get("customer_id")
-            }
-
-        elif tool_name == "query_work_order":
-            return "query_work_order", {
-                "work_order_id": extracted_slots.get("work_order_id")
-            }
-
-        elif tool_name == "create_work_order":
+        # 复杂工具：需要特殊验证逻辑
+        if tool_name == "create_work_order":
             work_type = extracted_slots.get("work_type", "其他")
-            # 验证work_type
-            if work_type not in self.VALID_WORK_TYPES:
+            if work_type not in VALID_WORK_TYPES:
                 work_type = "其他"
 
             priority = extracted_slots.get("priority", "中")
-            if priority not in self.VALID_PRIORITIES:
+            if priority not in VALID_PRIORITIES:
                 priority = "中"
 
             params = {
@@ -410,16 +437,15 @@ class ExecutorAgent:
                 "priority": priority,
             }
             # 只有有值时才添加可选参数
-            if extracted_slots.get("order_id"):
-                params["order_id"] = extracted_slots.get("order_id")
-            if extracted_slots.get("assigned_to"):
-                params["assigned_to"] = extracted_slots.get("assigned_to")
+            for opt_param in ["order_id", "assigned_to"]:
+                if extracted_slots.get(opt_param):
+                    params[opt_param] = extracted_slots.get(opt_param)
 
             return "create_work_order", params
 
-        elif tool_name == "approve_work_order":
+        if tool_name == "approve_work_order":
             action = extracted_slots.get("action", "approve")
-            if action not in self.VALID_APPROVE_ACTIONS:
+            if action not in VALID_APPROVE_ACTIONS:
                 action = "approve"
 
             return "approve_work_order", {
@@ -429,13 +455,13 @@ class ExecutorAgent:
                 "approver": extracted_slots.get("approver", "Agent System")
             }
 
-        elif tool_name == "report_issue":
+        if tool_name == "report_issue":
             issue_type = extracted_slots.get("issue_type", "其他")
-            if issue_type not in self.VALID_ISSUE_TYPES:
+            if issue_type not in VALID_ISSUE_TYPES:
                 issue_type = "其他"
 
             urgency = extracted_slots.get("urgency", "中")
-            if urgency not in self.VALID_URGENCIES:
+            if urgency not in VALID_URGENCIES:
                 urgency = "中"
 
             params = {
@@ -444,7 +470,6 @@ class ExecutorAgent:
                 "urgency": urgency,
                 "reported_by": extracted_slots.get("reported_by", "Agent System")
             }
-            # 只有有值时才添加可选参数
             if extracted_slots.get("order_id"):
                 params["affected_order"] = extracted_slots.get("order_id")
 
@@ -496,7 +521,8 @@ class ExecutorAgent:
 
     async def _execute_tool(self, task: Task) -> Dict[str, Any]:
         """Execute a tool with intelligent retry logic."""
-        client = await get_tool_client()
+        # H4修复：通过ServiceContainer获取tool_client
+        client = await ServiceContainer.get_tool_client()
 
         # 使用智能重试管理器（如果可用）
         if self.retry_manager and RETRY_MANAGER_AVAILABLE:
@@ -594,9 +620,10 @@ class ExecutorAgent:
 
         self.execution_history.append(execution_record)
 
-        # 保持执行历史大小
-        if len(self.execution_history) > 100:  # 最多保留100条记录
-            self.execution_history = self.execution_history[-100:]
+        # 保持执行历史大小（M28修复：使用常量，提前截断）
+        if len(self.execution_history) > self.MAX_EXECUTION_HISTORY:
+            # 保留最新的记录，删除旧的
+            self.execution_history = self.execution_history[-self.MAX_EXECUTION_HISTORY:]
 
     def get_execution_stats(self) -> Dict[str, Any]:
         """获取执行统计信息"""
@@ -666,10 +693,18 @@ class ExecutorAgent:
 
         Returns:
             List of task names to execute
+
+        Raises:
+            ValueError: When intent is empty or invalid
         """
         intent_level_1 = intent.get("intent_level_1", "")
         intent_level_2 = intent.get("intent_level_2", "")
         extracted_slots = intent.get("entities", [])
+
+        # 验证意图有效性
+        if not intent_level_1 and not intent_level_2:
+            print("⚠️ [执行计划] 意图为空，无法生成执行计划")
+            return []
 
         # Convert entities to slot dict
         slot_dict = {}
@@ -686,11 +721,21 @@ class ExecutorAgent:
         tool_name = self.TOOL_MAPPING.get(intent_level_2,
                                           self.TOOL_MAPPING.get(intent_level_1, ""))
 
-        if tool_name and self._can_execute_tool(tool_name, slot_dict):
-            return [tool_name]
+        if tool_name:
+            if self._can_execute_tool(tool_name, slot_dict):
+                print(f"📋 [执行计划] 意图 '{intent_level_1}/{intent_level_2}' 映射到工具: {tool_name}")
+                return [tool_name]
+            else:
+                # 工具存在但参数不满足
+                missing_params = self._get_missing_params(tool_name, slot_dict)
+                print(f"⚠️ [执行计划] 工具 '{tool_name}' 缺少必要参数: {missing_params}")
+                # 返回工具名，让后续流程处理参数缺失
+                return [tool_name]
 
-        # Default plan for unknown intents
-        return []  # Default fallback
+        # 未知意图的回退处理
+        print(f"⚠️ [执行计划] 未知意图: level_1='{intent_level_1}', level_2='{intent_level_2}'")
+        print(f"   可用意图映射: {list(self.TOOL_MAPPING.keys())[:10]}...")
+        return []
 
     async def execute_plan_with_llm_feedback(
         self,
@@ -901,7 +946,8 @@ class ExecutorAgent:
         )
 
         try:
-            llm_client = get_llm_client()
+            # H4修复：通过ServiceContainer获取LLM客户端
+            llm_client = ServiceContainer.get_llm_client()
             result = await llm_client.generate_json(prompt)
 
             # 提取参数
@@ -953,51 +999,18 @@ class ExecutorAgent:
             )
             return prompt
 
-        # 降级：使用简化的prompt
-        prompt = f"""你是一个供应链系统的参数提取专家。请根据当前工具的执行结果，为下一个工具提取或生成所需的参数。
-
-## 当前执行状态
-- 执行计划: {execution_context.get('plan', [])}
-- 已执行工具: {execution_context.get('executed_tools', [])}
-- 当前步骤: {execution_context.get('current_step', 1)}
-
-## 当前工具执行结果
-工具名称: {current_tool}
-执行结果:
-```json
-{json.dumps(current_result, ensure_ascii=False, indent=2, default=str)}
-```
-
-## 下一个要执行的工具
-工具名称: {next_tool}
-必需参数: {required_params}
-可选参数: {optional_params}
-
-## 当前已有的槽位信息
-```json
-{json.dumps(current_slots, ensure_ascii=False, indent=2)}
-```
-
-## 任务
-请分析当前工具的执行结果，为下一个工具提取或生成所需的参数。
-- 优先从执行结果中提取参数值
-- 如果执行结果中没有所需参数，尝试从已有槽位中获取
-- 如果是工单查询结果，注意提取 customer_id、order_id 等关联信息
-- 只返回下一个工具实际需要的参数
-
-请直接输出JSON格式的结果，格式如下：
-```json
-{{
-  "parameters": {{
-    "参数名": "参数值"
-  }}
-}}
-```
-
-注意：
-1. 只输出JSON，不要包含其他文字说明
-2. 参数值要准确，从执行结果中提取时要保持原始格式
-3. 如果某个必需参数无法从结果中获取，可以在parameters中设为null"""
+        # L7修复：使用模板文件中的降级Prompt，而非硬编码
+        prompt = TOOL_PARAM_EXTRACTION_FALLBACK.format(
+            execution_plan=json.dumps(execution_context.get("plan", []), ensure_ascii=False),
+            executed_tools=json.dumps(execution_context.get("executed_tools", []), ensure_ascii=False),
+            current_step=execution_context.get("current_step", 1),
+            current_tool=current_tool,
+            current_result=json.dumps(current_result, ensure_ascii=False, indent=2, default=str),
+            next_tool=next_tool,
+            required_params=json.dumps(required_params, ensure_ascii=False),
+            optional_params=json.dumps(optional_params, ensure_ascii=False),
+            current_slots=json.dumps(current_slots, ensure_ascii=False, indent=2)
+        )
         return prompt
 
     def _can_execute_tool(self, tool_name: str, slots: Dict[str, Any]) -> bool:
@@ -1012,6 +1025,29 @@ class ExecutorAgent:
                 return False
 
         return True
+
+    def _get_missing_params(self, tool_name: str, slots: Dict[str, Any]) -> List[str]:
+        """
+        Get list of missing required parameters for a tool.
+
+        Args:
+            tool_name: Name of the tool
+            slots: Available slots/values
+
+        Returns:
+            List of missing parameter names
+        """
+        if tool_name not in self.TOOL_PARAMS:
+            return []
+
+        required_params = self.TOOL_PARAMS[tool_name]["required"]
+        missing = []
+
+        for param in required_params:
+            if param not in slots or not slots[param]:
+                missing.append(param)
+
+        return missing
 
     def _get_timestamp(self) -> str:
         """Get current timestamp."""

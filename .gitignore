@@ -50,6 +50,11 @@ env/
 *.log
 logs/
 
+# Code review files (internal tracking, not for commit)
+docs/code_review_old.md
+docs/CODE_REVIEW_REPORT.md
+docs/ISSUES_SUMMARY.md
+
 # OS
 .DS_Store
 Thumbs.db

@@ -11,13 +11,112 @@ from langgraph.checkpoint.memory import MemorySaver
 import operator
 
 
-class AgentState(TypedDict):
-    """Global state shared by all agents in the graph."""
+# ============== 具体类型定义（M29修复：替代Dict[str, Any]）==============
 
+class CircuitBreakerState(TypedDict, total=False):
+    """熔断器状态"""
+    is_open: bool
+    failure_count: int
+    last_failure_time: float
+    recovery_timeout: float
+
+
+class ToolResultData(TypedDict, total=False):
+    """工具执行结果数据"""
+    success: bool
+    data: Dict[str, Any]
+    error: Optional[str]
+    execution_time_ms: float
+
+
+class ErrorTemplateParams(TypedDict, total=False):
+    """错误模板参数"""
+    order_id: Optional[str]
+    customer_id: Optional[str]
+    error_detail: Optional[str]
+    trace_id: Optional[str]
+
+
+# ============== 分组状态定义 ==============
+
+class ConversationState(TypedDict, total=False):
+    """对话相关状态"""
+    messages: Annotated[List[Dict[str, str]], operator.add]
+
+
+class IntentState(TypedDict, total=False):
+    """意图识别相关状态"""
+    user_intent: Dict[str, Any]
+    extracted_slots: Dict[str, Any]
+    missing_slots: List[str]
+
+
+class ExecutionState(TypedDict, total=False):
+    """任务执行相关状态"""
+    task_queue: List[str]
+    current_task: Optional[str]
+    tool_results: Dict[str, ToolResultData]
+
+
+class AuditState(TypedDict, total=False):
+    """审计验证相关状态"""
+    audit_results: Dict[str, Any]
+    validation_errors: List[str]
+
+
+class MemoryState(TypedDict, total=False):
+    """记忆上下文相关状态"""
+    context_window: List[Dict[str, Any]]
+    long_term_memory_refs: List[str]
+
+
+class ErrorState(TypedDict, total=False):
+    """错误处理相关状态"""
+    error_count: int
+    last_error: Optional[str]
+    last_error_type: Optional[str]
+    last_error_trace: Optional[str]
+    circuit_breakers: Dict[str, CircuitBreakerState]
+    error_code: Optional[str]
+    error_template_params: ErrorTemplateParams
+    from_error_handler: bool
+
+
+class OutputState(TypedDict, total=False):
+    """输出相关状态"""
+    final_report: Optional[Dict[str, Any]]
+    response_card: Optional[Dict[str, Any]]
+
+
+class ClarificationState(TypedDict, total=False):
+    """澄清相关状态"""
+    waiting_for_input: bool
+    clarification_prompt: Optional[str]
+    clarification_received: bool
+    clarification_loop_count: int
+    max_clarification_reached: bool
+
+
+# ============== 完整状态定义 ==============
+
+class AgentState(TypedDict):
+    """
+    全局状态，按功能分组管理。
+
+    包含以下分组：
+    - conversation: 对话历史
+    - intent: 意图识别
+    - execution: 任务执行
+    - audit: 审计验证
+    - memory: 记忆上下文
+    - error: 错误处理
+    - output: 输出结果
+    - clarification: 澄清处理
+    """
     # Conversation history
     messages: Annotated[List[Dict[str, str]], operator.add]
 
-    # User intent and extracted information
+    # Intent recognition
     user_intent: Dict[str, Any]
     extracted_slots: Dict[str, Any]
     missing_slots: List[str]
@@ -38,6 +137,8 @@ class AgentState(TypedDict):
     # Error handling
     error_count: int
     last_error: Optional[str]
+    last_error_type: Optional[str]
+    last_error_trace: Optional[str]
     circuit_breakers: Dict[str, Dict[str, Any]]
 
     # Error code and template params (from handle_error_node)
@@ -85,27 +186,37 @@ class StateManager:
             Initial agent state
         """
         return {
+            # Conversation
             "messages": [
                 {"role": "user", "content": user_input}
             ],
+            # Intent
             "user_intent": {},
             "extracted_slots": {},
             "missing_slots": [],
+            # Execution
             "task_queue": [],
             "current_task": None,
             "tool_results": {},
+            # Audit
             "audit_results": {},
             "validation_errors": [],
+            # Memory
             "context_window": [],
             "long_term_memory_refs": [],
+            # Error
             "error_count": 0,
             "last_error": None,
+            "last_error_type": None,
+            "last_error_trace": None,
             "circuit_breakers": {},
             "error_code": None,
             "error_template_params": {},
             "from_error_handler": False,
+            # Output
             "final_report": None,
             "response_card": None,
+            # Clarification
             "waiting_for_input": False,
             "clarification_prompt": None,
             "clarification_received": False,
@@ -222,5 +333,24 @@ class StateManager:
         return state
 
 
-# Global state manager instance
-state_manager = StateManager()
+# H4修复：使用getter函数管理单例
+_state_manager_instance: Optional["StateManager"] = None
+
+
+def get_state_manager() -> "StateManager":
+    """获取状态管理器单例"""
+    global _state_manager_instance
+    if _state_manager_instance is None:
+        _state_manager_instance = StateManager()
+    return _state_manager_instance
+
+
+def reset_state_manager():
+    """重置状态管理器单例（用于测试）"""
+    global _state_manager_instance
+    _state_manager_instance = None
+
+
+# 向后兼容：初始化默认实例
+# 注意：新代码应使用 get_state_manager()，测试时使用 reset_state_manager()
+state_manager = get_state_manager()

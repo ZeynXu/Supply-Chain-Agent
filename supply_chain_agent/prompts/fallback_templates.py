@@ -40,6 +40,103 @@ class ErrorCodes:
     GENERAL_FALLBACK = "GENERAL_FALLBACK"
 
 
+def determine_error_code(
+    error_detail: str,
+    tool_name: str = None,
+    error_count: int = 0,
+    validation_errors: list = None,
+    max_clarification_reached: bool = False
+) -> str:
+    """
+    统一的错误代码确定函数（解决M19重复定义问题）。
+
+    Args:
+        error_detail: 错误详情字符串
+        tool_name: 工具名称（可选）
+        error_count: 错误计数
+        validation_errors: 验证错误列表
+        max_clarification_reached: 是否达到最大澄清循环次数
+
+    Returns:
+        错误编码
+    """
+    error_detail_lower = error_detail.lower() if error_detail else ""
+    validation_errors = validation_errors or []
+
+    # 1. 检查是否达到最大澄清循环次数
+    if max_clarification_reached:
+        return ErrorCodes.ENTITY_EXTRACTION_INCOMPLETE
+
+    # 2. 检查是否有验证错误
+    if validation_errors:
+        validation_error_str = " ".join(validation_errors).lower()
+        if "parser" in validation_error_str:
+            return ErrorCodes.INTENT_CLASSIFICATION_LOW_CONFIDENCE
+        if "entity" in validation_error_str or "实体" in validation_error_str:
+            return ErrorCodes.ENTITY_EXTRACTION_INCOMPLETE
+        if "slot" in validation_error_str or "槽位" in validation_error_str:
+            return ErrorCodes.SLOT_FILLING_FAILED
+        if "planning" in validation_error_str or "task" in validation_error_str:
+            return ErrorCodes.WORKFLOW_EXECUTION_FAILED
+
+    # 3. 检查错误计数
+    if error_count >= 3:
+        return ErrorCodes.TOOL_CALL_MAX_RETRIES_EXCEEDED
+
+    # 4. 根据错误详情判断
+    if error_detail:
+        # 数据库连接错误
+        if "database" in error_detail_lower or "数据库" in error_detail:
+            return ErrorCodes.DATABASE_CONNECTION_FAILED
+        # MCP 服务不可达
+        if "mcp" in error_detail_lower or "service" in error_detail_lower or "服务" in error_detail:
+            return ErrorCodes.MCP_SERVER_UNREACHABLE
+        # 熔断
+        if "circuit" in error_detail_lower or "熔断" in error_detail:
+            return ErrorCodes.CIRCUIT_BREAKER_OPEN
+        # 会话过期
+        if "session" in error_detail_lower or "会话" in error_detail:
+            return ErrorCodes.SESSION_EXPIRED
+        # 上下文超限
+        if "context" in error_detail_lower or "上下文" in error_detail:
+            return ErrorCodes.CONTEXT_LENGTH_EXCEEDED
+
+    # 5. 工具特定错误判断
+    if tool_name:
+        # 订单相关错误
+        if tool_name in ["query_order", "query_order_items"]:
+            if "not found" in error_detail_lower or "不存在" in error_detail:
+                return ErrorCodes.QUERY_ORDER_NOT_FOUND
+            if "timeout" in error_detail_lower or "超时" in error_detail:
+                return ErrorCodes.QUERY_ORDER_TIMEOUT
+
+        # 客户相关错误
+        elif tool_name == "query_customer":
+            if "not found" in error_detail_lower or "不存在" in error_detail:
+                return ErrorCodes.QUERY_CUSTOMER_NOT_FOUND
+            if "timeout" in error_detail_lower or "超时" in error_detail:
+                return ErrorCodes.QUERY_CUSTOMER_TIMEOUT
+
+        # 产品相关错误
+        elif tool_name == "query_product":
+            if "not found" in error_detail_lower or "不存在" in error_detail:
+                return ErrorCodes.QUERY_PRODUCT_NOT_FOUND
+            if "timeout" in error_detail_lower or "超时" in error_detail:
+                return ErrorCodes.QUERY_PRODUCT_TIMEOUT
+
+        # 物流/运输相关错误
+        elif tool_name in ["query_shipment", "query_logistics"]:
+            if "not found" in error_detail_lower or "不存在" in error_detail:
+                return ErrorCodes.QUERY_SHIPMENT_NOT_FOUND
+            if "timeout" in error_detail_lower or "超时" in error_detail:
+                return ErrorCodes.QUERY_SHIPMENT_TIMEOUT
+            if "trace" in error_detail_lower or "轨迹" in error_detail:
+                return ErrorCodes.LOGISTICS_TRACE_FAILED
+
+    # 默认返回工作流执行失败
+    return ErrorCodes.WORKFLOW_EXECUTION_FAILED
+
+
 def get_fallback_response(error_code: str, **kwargs) -> Dict[str, Any]:
     """
     Get fallback response for an error code.

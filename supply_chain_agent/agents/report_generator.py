@@ -161,6 +161,8 @@ class ReportGenerator:
         """
         根据工具名称和错误详情确定错误编码。
 
+        重构（M19）：使用统一的 determine_error_code 函数。
+
         Args:
             tool_name: 工具名称
             error_detail: 错误详情
@@ -168,52 +170,8 @@ class ReportGenerator:
         Returns:
             错误编码
         """
-        error_detail_lower = error_detail.lower() if error_detail else ""
-
-        # 订单相关错误
-        if tool_name in ["query_order", "query_order_items"]:
-            if "not found" in error_detail_lower or "不存在" in error_detail:
-                return ErrorCodes.QUERY_ORDER_NOT_FOUND
-            if "timeout" in error_detail_lower or "超时" in error_detail:
-                return ErrorCodes.QUERY_ORDER_TIMEOUT
-            return ErrorCodes.WORKFLOW_EXECUTION_FAILED
-
-        # 客户相关错误
-        if tool_name == "query_customer":
-            if "not found" in error_detail_lower or "不存在" in error_detail:
-                return ErrorCodes.QUERY_CUSTOMER_NOT_FOUND
-            if "timeout" in error_detail_lower or "超时" in error_detail:
-                return ErrorCodes.QUERY_CUSTOMER_TIMEOUT
-            return ErrorCodes.WORKFLOW_EXECUTION_FAILED
-
-        # 产品相关错误
-        if tool_name == "query_product":
-            if "not found" in error_detail_lower or "不存在" in error_detail:
-                return ErrorCodes.QUERY_PRODUCT_NOT_FOUND
-            if "timeout" in error_detail_lower or "超时" in error_detail:
-                return ErrorCodes.QUERY_PRODUCT_TIMEOUT
-            return ErrorCodes.WORKFLOW_EXECUTION_FAILED
-
-        # 物流/运输相关错误
-        if tool_name in ["query_shipment", "query_logistics"]:
-            if "not found" in error_detail_lower or "不存在" in error_detail:
-                return ErrorCodes.QUERY_SHIPMENT_NOT_FOUND
-            if "timeout" in error_detail_lower or "超时" in error_detail:
-                return ErrorCodes.QUERY_SHIPMENT_TIMEOUT
-            if "trace" in error_detail_lower or "轨迹" in error_detail:
-                return ErrorCodes.LOGISTICS_TRACE_FAILED
-            return ErrorCodes.WORKFLOW_EXECUTION_FAILED
-
-        # 数据库连接错误
-        if "database" in error_detail_lower or "数据库" in error_detail:
-            return ErrorCodes.DATABASE_CONNECTION_FAILED
-
-        # MCP 服务不可达
-        if "mcp" in error_detail_lower or "service" in error_detail_lower:
-            return ErrorCodes.MCP_SERVER_UNREACHABLE
-
-        # 默认返回工作流执行失败
-        return ErrorCodes.WORKFLOW_EXECUTION_FAILED
+        from supply_chain_agent.prompts.fallback_templates import determine_error_code
+        return determine_error_code(error_detail, tool_name=tool_name)
 
     def extract_template_params(
         self,

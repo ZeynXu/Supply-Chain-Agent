@@ -25,6 +25,8 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-01: 优化审批工单意图下，工具调用的规划与执行方案
 >
+> 2026-06-03: 架构优化：创建完整异常层次结构；明确Orchestrator职责边界，剥离Workflow类等
+>
 
 ---
 
@@ -68,6 +70,12 @@ An intelligent agent system for supply chain work order processing built on the 
 ```
 Supply-Chain-Agent/
 ├── supply_chain_agent/           # 主模块
+│   ├── common/                   # 公共模块
+│   │   ├── exceptions.py         # 异常层次结构
+│   │   ├── service_container.py  # 服务容器（依赖注入）
+│   │   ├── protocols.py          # 消息协议定义
+│   │   ├── param_validator.py    # 参数验证器
+│   │   └── valid_values.py       # 有效值定义
 │   ├── agents/                   # Agent定义
 │   │   ├── orchestrator.py       # 总控Agent
 │   │   ├── parser.py             # 解析师Agent
@@ -104,7 +112,9 @@ Supply-Chain-Agent/
 │   ├── OtherData/                # 配置文件
 │   └── README.md                 # 数据说明
 ├── docs/                         # 项目文档
-│   └── PROJECT_RESEARCH_REPORT.md
+│   ├── PROJECT_RESEARCH_REPORT.md# 项目研究报告
+│   ├── ISSUES_SUMMARY.md         # 问题修复汇总
+│   └── CODE_REVIEW_REPORT.md     # 代码审查报告
 ├── requirements.txt              # Python依赖
 └── README.md                     # 本文件
 ```
@@ -418,15 +428,17 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 | 模块 | 文件 | 代码行数 | 主要职责 |
 |------|------|----------|----------|
-| **Orchestrator** | orchestrator.py | ~650行 | 总控协调、状态管理 |
-| **Parser** | parser.py | ~830行 | 意图识别、实体提取 |
-| **Executor** | executor.py | ~1087行 | 工具编排、执行控制 |
-| **Auditor** | auditor.py | ~334行 | 结果验证、风控审计 |
-| **MCP Server** | server.py | ~754行 | 工具服务、数据查询 |
-| **Workflow** | workflow.py | ~949行 | 状态机、节点逻辑 |
-| **Database** | supply_chain_db.py | ~1426行 | 数据存储、业务查询 |
-| **App** | app.py | ~1077行 | API服务、WebSocket |
-| **总计** | - | **~7642行** | 核心业务代码 |
+| **Orchestrator** | orchestrator.py | ~400行 | 总控协调、依赖注入 |
+| **Parser** | parser.py | ~1000行 | 意图识别、实体提取 |
+| **Executor** | executor.py | ~1100行 | 工具编排、执行控制 |
+| **Auditor** | auditor.py | ~350行 | 结果验证、风控审计 |
+| **Workflow** | workflow.py | ~1800行 | 状态机、节点逻辑 |
+| **Exceptions** | exceptions.py | ~200行 | 异常层次结构 |
+| **ServiceContainer** | service_container.py | ~300行 | 服务容器（依赖注入） |
+| **MCP Server** | server.py | ~750行 | 工具服务、数据查询 |
+| **Database** | supply_chain_db.py | ~1400行 | 数据存储、业务查询 |
+| **App** | app.py | ~1100行 | API服务、WebSocket |
+| **总计** | - | **~8000行** | 核心业务代码 |
 
 ### 📋 设计原则
 
@@ -442,16 +454,16 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 
 #### 核心智能体职责
 
-1. **🎯 Orchestrator (总控Agent)** (~650行)
-   - 职责：全局状态管理、上下文窗口管理、子Agent调度
-   - 能力：工作流控制、中断恢复、事件回调、依赖注入
-   - 核心方法：`process()`, `process_with_callback()`
+1. **🎯 Orchestrator (总控Agent)**
+   - 职责：依赖注入管理、高层API封装、响应处理、错误协调
+   - 工作流控制逻辑已移至Workflow类
+   - 核心方法：`process()`, `process_with_callback()`, `_extract_response()`
    - 输出：最终响应
 
 2. **🔍 Parser (解析师Agent)** (~830行)
    - 职责：意图识别、实体提取、槽位填充
-   - 能力：规则引擎+BERT NER+LLM三层融合识别
-   - 核心方法：`parse_intent()`, `_extract_entities_by_rules()`
+   - 三层意图识别有明确触发条件，实体提取方法分离
+   - 核心方法：`parse_intent()`, `_extract_entities_by_rules()`, `_extract_entities_by_ner()`
    - 输出：结构化意图（primary_task, secondary_task, entities, slots）
 
 3. **⚙️ Executor (调度员Agent)** (~1087行)
@@ -505,10 +517,12 @@ graph TD
 
 1. **🤖 四Agent星型拓扑**
    - 总控Agent协调三个专业子Agent，职责清晰
-   - 支持依赖注入，便于解耦
+   - Orchestrator职责明确，工作流控制逻辑移至Workflow类
+   - 支持真正的依赖注入，通过ServiceContainer获取依赖
 
 2. **🔄 LangGraph状态机**
    - 8节点状态机（parse_input → clarify → plan_task → execute_task → retry → audit → generate_report → handle_error）
+   - 节点函数提取为类方法，便于独立测试和复用
    - 支持中断恢复和Human-in-the-loop
    - 检查点持久化，支持断点恢复
 
@@ -517,12 +531,19 @@ graph TD
    - SOP知识库增强，提升决策质量
 
 4. **📝 三层意图识别架构**
-   - 第一层：规则引擎专注意图模式匹配（一级+二级）+ 置信度计算
-   - 第二层：BERT NER专注实体提取（order_id、customer_id、product_card_id、work_order_id等）
-   - 第三层：LLM兜底（意图分类+实体提取）
+   - 第一层：规则引擎专注意图模式匹配（一级+二级）+ 规则实体提取 + 置信度计算
+   - 第二层：BERT NER专注实体提取（触发条件：置信度<0.75或实体为空）
+   - 第三层：LLM兜底（触发条件：置信度<0.7或需要实体但无实体）
+   - 明确的触发条件判断方法：`_can_skip_further_layers()`, `_should_trigger_ner()`, `_should_trigger_llm()`
    - 职责分离清晰，降低LLM调用成本
 
-5. **🛡️ 熔断器模式**
+5. **🛡️ 异常处理层次结构**
+   - 定义RecoverableError（可恢复）和UnrecoverableError（不可恢复）异常基类
+   - 具体异常类型：IntentParseError, ToolExecutionError, ValidationError等
+   - `wrap_exception()`自动包装标准异常
+   - 支持智能错误恢复策略
+
+6. **🔧 熔断器模式**
    - 工具调用熔断保护，防止故障扩散
    - 多种重试策略，智能降级
 

@@ -74,6 +74,12 @@ class AuditorAgent:
         warnings = []
         notifications = []
 
+        # M9修复：应用审计规则
+        rule_results = self._apply_audit_rules(tool_results)
+        issues.extend(rule_results.get("issues", []))
+        warnings.extend(rule_results.get("warnings", []))
+        notifications.extend(rule_results.get("notifications", []))
+
         # Check each tool result
         for tool_name, result in tool_results.items():
             tool_audit = await self._audit_tool_result(tool_name, result)
@@ -113,6 +119,84 @@ class AuditorAgent:
         self.audit_history.append(audit_record)
 
         return audit_record
+
+    def _apply_audit_rules(self, tool_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        M9修复：应用AUDIT_RULES进行审计
+
+        Args:
+            tool_results: 工具执行结果
+
+        Returns:
+            按严重程度分类的问题列表
+        """
+        issues = []
+        warnings = []
+        notifications = []
+
+        for rule in self.AUDIT_RULES:
+            triggered = False
+            message = ""
+
+            # 检查规则触发条件
+            if rule.name == "missing_tracking_number":
+                # 物流查询结果缺少运单号
+                shipment = tool_results.get("query_shipment", {})
+                if shipment and "tracking_number" not in shipment:
+                    triggered = True
+                    message = "物流查询结果缺少运单号"
+
+            elif rule.name == "unusual_delivery_time":
+                # 预计送达时间异常（超过30天）
+                shipment = tool_results.get("query_shipment", {})
+                if shipment:
+                    from datetime import datetime
+                    try:
+                        eta = shipment.get("estimated_delivery_date")
+                        if eta:
+                            eta_date = datetime.strptime(eta, "%Y-%m-%d")
+                            if (eta_date - datetime.now()).days > 30:
+                                triggered = True
+                                message = f"预计送达时间异常：{eta}（超过30天）"
+                    except (ValueError, TypeError):
+                        pass
+
+            elif rule.name == "order_cancelled":
+                # 订单状态为已取消
+                order = tool_results.get("query_order", {})
+                if order and order.get("order_status") == "CANCELED":
+                    triggered = True
+                    message = "订单状态为已取消"
+
+            elif rule.name == "high_value_order":
+                # 订单金额超过100,000
+                order = tool_results.get("query_order", {})
+                if order:
+                    benefit = order.get("benefit_per_order", 0)
+                    if benefit and benefit > 100000:
+                        triggered = True
+                        message = f"高价值订单：¥{benefit:,.2f}"
+
+            elif rule.name == "approval_without_comment":
+                # 审批操作缺少审批意见
+                approval = tool_results.get("approve_work_order", {})
+                if approval:
+                    comment = approval.get("comment", "")
+                    action = approval.get("action", "")
+                    if action in ["approve", "reject"] and not comment:
+                        triggered = True
+                        message = f"审批操作({action})缺少审批意见"
+
+            # 根据规则严重程度和动作分类
+            if triggered:
+                if rule.action == "reject":
+                    issues.append(f"[{rule.severity.upper()}] {message}")
+                elif rule.action == "warn":
+                    warnings.append(message)
+                elif rule.action == "notify":
+                    notifications.append(message)
+
+        return {"issues": issues, "warnings": warnings, "notifications": notifications}
 
     async def _audit_tool_result(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
         """Audit a single tool result."""
@@ -245,6 +329,7 @@ class AuditorAgent:
     async def _check_data_consistency(self, tool_results: Dict[str, Any]) -> List[str]:
         """Check data consistency within results."""
         issues = []
+        warnings = []
 
         for tool_name, result in tool_results.items():
             # Check for contradictory information
@@ -258,7 +343,8 @@ class AuditorAgent:
                 elif order_status == "PROCESSING" and delivery_status == "Late delivery":
                     warnings.append("订单处理中但配送已延迟")
 
-        return issues
+        # 返回issues和warnings（warnings标记为警告级别）
+        return issues + [f"[警告] {w}" for w in warnings]
 
     async def _validate_business_logic(self, tool_results: Dict[str, Any]) -> List[str]:
         """Validate business logic rules."""
@@ -287,6 +373,13 @@ class AuditorAgent:
         """
         Calculate risk score for tool results.
 
+        改进后的风险评分计算：
+        - 根据问题严重程度分级加权
+        - 严重问题(CRITICAL): 权重 1.0
+        - 中等问题(MEDIUM): 权重 0.5
+        - 轻微问题(MINOR): 权重 0.2
+        - 警告(WARNING): 权重 0.1
+
         Args:
             tool_results: Results from tool execution
 
@@ -295,15 +388,40 @@ class AuditorAgent:
         """
         audit_result = await self.audit_results(tool_results)
 
-        # Calculate risk based on issues
-        issue_count = audit_result.get("issue_count", 0)
-        warning_count = audit_result.get("warning_count", 0)
+        issues = audit_result.get("issues", [])
+        warnings = audit_result.get("warnings", [])
 
-        # Weight issues more heavily than warnings
-        risk_score = (issue_count * 0.7 + warning_count * 0.3) / 10.0
+        # 按严重程度分类问题
+        critical_count = 0
+        medium_count = 0
+        minor_count = 0
+
+        for issue in issues:
+            issue_upper = issue.upper()
+            # 严重问题：包含严重、CRITICAL、错误、ERROR等关键词
+            if "严重" in issue or "CRITICAL" in issue_upper or "错误" in issue or "ERROR" in issue_upper:
+                critical_count += 1
+            # 中等问题：包含中等、MEDIUM、异常、WARNING等关键词
+            elif "中等" in issue or "MEDIUM" in issue_upper or "异常" in issue or "失败" in issue:
+                medium_count += 1
+            # 轻微问题：其他问题
+            else:
+                minor_count += 1
+
+        # 按严重程度加权计算风险分数
+        # 严重问题权重最高，每个贡献0.25（4个即达到满分）
+        # 中等问题每个贡献0.1
+        # 轻微问题每个贡献0.05
+        # 警告每个贡献0.02
+        weighted_score = (
+            critical_count * 0.25 +
+            medium_count * 0.1 +
+            minor_count * 0.05 +
+            len(warnings) * 0.02
+        )
 
         # Cap at 1.0
-        return min(1.0, max(0.0, risk_score))
+        return min(1.0, max(0.0, weighted_score))
 
     def get_audit_summary(self) -> Dict[str, Any]:
         """Get summary of audit history."""

@@ -5,6 +5,30 @@ Responsible for understanding user intent and extracting relevant information.
 Enhanced with LLM integration for fuzzy input handling.
 Entity extraction powered by BERT NER model.
 Entity mappings loaded from database (dataset/OtherData/EntityMapping.csv).
+
+M4修复：三层意图识别架构说明
+=============================
+意图识别采用三层流水线架构：
+
+**第一层：规则引擎（快速路径）**
+- 使用正则表达式匹配意图模式
+- 使用关键词映射表识别实体
+- 置信度>=0.75时直接返回，跳过后续层
+
+**第二层：BERT NER（精确提取，可选）**
+- 当规则引擎置信度不足时启用
+- 使用预训练BERT模型提取命名实体
+- 模型文件不存在时自动降级到规则层
+
+**第三层：LLM（兜底）**
+- 当规则+NER都无法确定意图时启用
+- 同时完成意图分类和实体提取
+- 适用于模糊、非标准输入
+
+**触发条件**:
+- 规则层置信度 < threshold (0.75) → 进入第二层
+- NER实体为空且置信度 < 0.7 → 进入第三层
+- 显式配置 `intent_rule_first=False` → 直接进入第三层
 """
 
 from typing import Dict, Any, List, Optional
@@ -32,6 +56,9 @@ try:
 except ImportError:
     LLM_AVAILABLE = False
     print("⚠️ LLM integration not available, using rule-based only")
+
+# H4修复：导入ServiceContainer
+from supply_chain_agent.common.service_container import ServiceContainer
 
 
 @dataclass
@@ -110,6 +137,18 @@ class ParserAgent:
         "reject": r"(拒绝|驳回|不同意|审批拒绝)",
     }
 
+    # L15修复：否定词列表，用于排除误判
+    NEGATION_PATTERNS = [
+        r"不想|不要|不希望|无需|不用",
+        r"不是.*?(查询|查|看)",
+        r"取消|撤销",
+        r"暂时不需要",
+    ]
+
+    # M24修复：意图缓存配置
+    INTENT_CACHE_MAX_SIZE = 100  # 最大缓存条目
+    INTENT_CACHE_TTL_SECONDS = 3600  # 缓存过期时间（1小时）
+
     def __init__(self, llm_client: Optional['LLMClient'] = None, use_bert_ner: bool = False):
         """
         Initialize ParserAgent with optional LLM client and BERT NER.
@@ -118,10 +157,16 @@ class ParserAgent:
             llm_client: LLM客户端实例（可选，默认从配置创建）
             use_bert_ner: 是否使用BERT NER进行实体识别（默认False，使用规则）
         """
-        self.intent_cache = {}
+        # M24修复：改进意图缓存，支持LRU和过期
+        self.intent_cache: Dict[str, Dict[str, Any]] = {}
+        self._cache_timestamps: Dict[str, float] = {}
+        self._cache_order: List[str] = []  # LRU顺序
 
-        # LLM客户端
-        self._llm_client = llm_client
+        # H4修复：LLM客户端通过ServiceContainer获取
+        if llm_client is not None:
+            self._llm_client = llm_client
+        else:
+            self._llm_client = ServiceContainer.get_llm_client() if LLM_AVAILABLE else None
         self.llm_enabled = LLM_AVAILABLE and settings.intent_rule_first
 
         # BERT NER - 初始化时检查可用性
@@ -131,7 +176,8 @@ class ParserAgent:
 
         if self.use_bert_ner:
             try:
-                self._bert_ner = get_ner_model(use_bert=True)
+                # H4修复：通过ServiceContainer获取NER模型
+                self._bert_ner = ServiceContainer.get_ner_instance()
                 # 验证模型是否真正加载成功
                 if self._bert_ner and self._bert_ner.model is not None:
                     self._bert_ner_available = True
@@ -160,6 +206,76 @@ class ParserAgent:
         except Exception as e:
             # Database may not be initialized yet
             pass
+
+    # M24修复：缓存管理方法
+    def _get_cache_key(self, text: str, context_hash: str = "") -> str:
+        """
+        生成缓存键，考虑上下文
+
+        Args:
+            text: 用户输入
+            context_hash: 上下文hash（可选）
+
+        Returns:
+            缓存键
+        """
+        import hashlib
+        content = f"{text}:{context_hash}" if context_hash else text
+        return hashlib.md5(content.encode()).hexdigest()[:16]
+
+    def _get_cached_intent(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        """
+        从缓存获取意图（带过期检查）
+
+        Args:
+            cache_key: 缓存键
+
+        Returns:
+            缓存的意图结果，或None
+        """
+        import time
+
+        # 检查过期
+        if cache_key in self._cache_timestamps:
+            age = time.time() - self._cache_timestamps[cache_key]
+            if age > self.INTENT_CACHE_TTL_SECONDS:
+                # 过期，删除
+                del self.intent_cache[cache_key]
+                del self._cache_timestamps[cache_key]
+                if cache_key in self._cache_order:
+                    self._cache_order.remove(cache_key)
+                return None
+
+        if cache_key in self.intent_cache:
+            # 更新LRU顺序
+            if cache_key in self._cache_order:
+                self._cache_order.remove(cache_key)
+            self._cache_order.append(cache_key)
+            return self.intent_cache[cache_key]
+        return None
+
+    def _set_cached_intent(self, cache_key: str, intent: Dict[str, Any]):
+        """
+        存入意图缓存（带LRU淘汰）
+
+        Args:
+            cache_key: 缓存键
+            intent: 意图结果
+        """
+        import time
+
+        # LRU淘汰
+        while len(self.intent_cache) >= self.INTENT_CACHE_MAX_SIZE:
+            if self._cache_order:
+                oldest = self._cache_order.pop(0)
+                self.intent_cache.pop(oldest, None)
+                self._cache_timestamps.pop(oldest, None)
+            else:
+                break
+
+        self.intent_cache[cache_key] = intent
+        self._cache_timestamps[cache_key] = time.time()
+        self._cache_order.append(cache_key)
 
     def _extend_entity_patterns(self):
         """Extend entity patterns with loaded mappings."""
@@ -211,9 +327,23 @@ class ParserAgent:
         """
         Parse user intent from text with 3-layer architecture.
 
-        第一层：规则引擎 - 意图模式匹配（一级+二级）+ 置信度计算
-        第二层：BERT NER - 实体提取
-        第三层：LLM - 意图分类 + 实体提取（规则未命中/置信度低/实体为空时触发）
+        M4修复：明确三层架构的执行逻辑
+        ================================
+        **第一层：规则引擎（快速路径）**
+        - 意图模式匹配（一级+二级）
+        - 规则实体提取
+        - 置信度 >= 0.75 时跳过后续层
+
+        **第二层：BERT NER（精确提取，条件触发）**
+        - 触发条件：规则层置信度 < 0.75 或 规则实体为空
+        - 使用BERT模型提取命名实体
+        - 模型不可用时自动跳过
+
+        **第三层：LLM（兜底）**
+        - 触发条件：
+          1. 第一层+第二层后置信度仍 < 0.7，或
+          2. 实体仍为空且是复杂意图
+        - 同时完成意图分类和实体提取
 
         Args:
             text: User input text
@@ -224,47 +354,79 @@ class ParserAgent:
         # Clean text
         cleaned_text = text.strip()
 
-        # Check cache
-        if cleaned_text in self.intent_cache:
-            return self.intent_cache[cleaned_text]
+        # M24修复：使用改进的缓存机制
+        cache_key = self._get_cache_key(cleaned_text)
+        cached_intent = self._get_cached_intent(cache_key)
+        if cached_intent is not None:
+            return cached_intent
 
-        # ========== 第一层：规则引擎 - 意图模式匹配 ==========
+        # 初始化结果变量
+        intent_level_1 = "信息查询"
+        intent_level_2 = "未知"
+        entities = []
+        confidence = 0.0
+        used_llm = False
+        used_ner = False
+
+        # ========== 第一层：规则引擎（始终执行）==========
         intent_level_1 = self._detect_intent_level_1(cleaned_text)
         intent_level_2 = self._detect_intent_level_2(cleaned_text, intent_level_1)
-        confidence = self._calculate_confidence(cleaned_text, intent_level_1, intent_level_2)
 
-        # 判断是否需要LLM补充意图识别（第一层判断）
-        needs_llm_for_intent = self._needs_llm_intent(cleaned_text, intent_level_1, intent_level_2, confidence)
-        used_llm = False
-        entities = []
+        # 规则实体提取
+        rule_entities = self._extract_entities_by_rules(cleaned_text, intent_level_1)
+        rule_confidence = self._calculate_confidence(cleaned_text, intent_level_1, intent_level_2)
 
-        # ========== 第二层：实体提取 ==========
-        # 始终执行第二层，不再跳过
-        entities = self._extract_entities(cleaned_text, intent_level_1)
+        entities = rule_entities
+        confidence = rule_confidence
 
-        # 如果第二层未提取到实体，可能需要LLM补充实体
-        needs_llm_for_entities = len(entities) == 0
+        # 判断是否跳过后续层（快速路径）
+        # 条件：置信度 >= 0.75 且 有实体 或 意图明确不需要实体
+        skip_further_layers = self._can_skip_further_layers(
+            confidence, entities, intent_level_1, intent_level_2
+        )
 
-        # ========== 第三层：LLM（如果需要）==========
-        # 触发条件：意图识别需要LLM 或 实体提取为空
-        needs_llm = needs_llm_for_intent or needs_llm_for_entities
+        # ========== 第二层：BERT NER（条件触发）==========
+        ner_entities = []
+        ner_triggered = False
 
-        if needs_llm and self.llm_client:
+        if not skip_further_layers and self._should_trigger_ner(confidence, entities):
+            ner_triggered = True
+            ner_entities = self._extract_entities_by_ner(cleaned_text, intent_level_1)
+
+            if ner_entities:
+                # 合并NER实体（规则未覆盖的）
+                entities = self._merge_entities(rule_entities, ner_entities)
+                used_ner = True
+                # NER提取成功，提升置信度
+                confidence = min(1.0, confidence + 0.1)
+
+        # ========== 第三层：LLM（条件触发）==========
+        # 触发条件：置信度仍低 或 实体为空且需要实体
+        should_trigger_llm = self._should_trigger_llm(
+            confidence, entities, intent_level_1, intent_level_2
+        )
+
+        if not skip_further_layers and should_trigger_llm and self.llm_client:
             try:
-                # LLM同时进行意图识别和实体提取（单次调用）
                 llm_result = await self._llm_classify_and_extract(cleaned_text)
 
-                # 融合LLM结果
                 if llm_result:
-                    intent_level_1 = llm_result.get("intent_level_1", intent_level_1)
-                    intent_level_2 = llm_result.get("intent_level_2", intent_level_2)
-                    confidence = llm_result.get("confidence", confidence)
-                    used_llm = True
-
-                    # 使用LLM返回的实体
+                    # 融合LLM结果
+                    llm_intent_1 = llm_result.get("intent_level_1")
+                    llm_intent_2 = llm_result.get("intent_level_2")
+                    llm_confidence = llm_result.get("confidence", 0.0)
                     llm_entities = llm_result.get("entities", [])
+
+                    # 如果LLM置信度更高，使用LLM的意图
+                    if llm_confidence > confidence:
+                        intent_level_1 = llm_intent_1 or intent_level_1
+                        intent_level_2 = llm_intent_2 or intent_level_2
+                        confidence = llm_confidence
+
+                    # 合并LLM实体
                     if llm_entities:
-                        entities = llm_entities
+                        entities = self._merge_entities(entities, llm_entities)
+                        used_llm = True
 
             except Exception as e:
                 print(f"⚠️ LLM intent classification failed: {e}, using rule-based result")
@@ -282,19 +444,203 @@ class ParserAgent:
             "confidence": confidence,
             "raw_text": cleaned_text,
             "used_llm": used_llm,
-            "used_ner": not used_llm and len(entities) > 0,
+            "used_ner": used_ner,
+            "layer_triggered": {
+                "layer1_rules": True,
+                "layer2_ner": ner_triggered,
+                "layer3_llm": used_llm
+            },
             "bert_ner_available": self._bert_ner_available,
             "timestamp": self._get_timestamp()
         }
 
-        # Cache result
-        self.intent_cache[cleaned_text] = intent
+        # M24修复：使用改进的缓存机制
+        self._set_cached_intent(cache_key, intent)
 
         return intent
 
+    # M4修复：明确各层触发条件的方法
+
+    def _can_skip_further_layers(self, confidence: float, entities: List[Dict],
+                                  intent_level_1: str, intent_level_2: str) -> bool:
+        """
+        判断是否可以跳过后续层（快速路径）。
+
+        条件：
+        1. 置信度 >= 0.75 且有实体，或
+        2. 意图类型不需要复杂实体提取
+        """
+        # 高置信度且有实体
+        if confidence >= 0.75 and len(entities) > 0:
+            return True
+
+        # 某些意图类型不需要复杂实体提取
+        simple_intents = ["客户订单查询", "客户统计查询"]
+        if intent_level_2 in simple_intents and confidence >= 0.6:
+            return True
+
+        return False
+
+    def _should_trigger_ner(self, confidence: float, entities: List[Dict]) -> bool:
+        """
+        判断是否应触发NER层。
+
+        条件：
+        1. 规则层置信度 < 0.75，或
+        2. 规则实体为空
+        """
+        if not self.use_bert_ner or not self._bert_ner_available:
+            return False
+
+        # 置信度不足
+        if confidence < 0.75:
+            return True
+
+        # 无实体
+        if len(entities) == 0:
+            return True
+
+        return False
+
+    def _should_trigger_llm(self, confidence: float, entities: List[Dict],
+                            intent_level_1: str, intent_level_2: str) -> bool:
+        """
+        判断是否应触发LLM层。
+
+        条件：
+        1. 置信度 < 0.7，或
+        2. 实体为空且意图需要实体
+        """
+        # 置信度不足
+        if confidence < 0.7:
+            return True
+
+        # 需要实体但无实体
+        requires_entities = intent_level_1 in ["工单管理", "异常上报"]
+        if requires_entities and len(entities) == 0:
+            return True
+
+        return False
+
+    def _extract_entities_by_rules(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
+        """
+        M4修复：仅使用规则提取实体（第一层）。
+        """
+        entities = []
+        extracted_keys = set()
+
+        for entity_type, pattern in self.ENTITY_PATTERNS.items():
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if match.lastindex and match.lastindex >= 1:
+                    value = match.group(1)
+                else:
+                    value = match.group()
+
+                entity_key = (entity_type, value)
+                if entity_key in extracted_keys:
+                    continue
+
+                extracted_keys.add(entity_key)
+                entities.append({
+                    "type": entity_type,
+                    "value": value,
+                    "start": match.start(),
+                    "end": match.end(),
+                    "confidence": 0.95,
+                    "source": "rules"
+                })
+
+        # 特殊处理：审批动作和备注
+        if intent_level_1 == "工单管理":
+            entities.extend(self._extract_approval_entities(text, extracted_keys))
+
+        return entities
+
+    def _extract_entities_by_ner(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
+        """
+        M4修复：仅使用BERT NER提取实体（第二层）。
+        """
+        if not self._bert_ner or not self._bert_ner_available:
+            return []
+
+        try:
+            ner_entities = self._bert_ner.extract_for_intent(text, intent_level_1)
+            for e in ner_entities:
+                e["source"] = "ner"
+            return ner_entities
+        except Exception as e:
+            print(f"⚠️ BERT NER提取失败: {e}")
+            return []
+
+    def _merge_entities(self, base_entities: List[Dict], new_entities: List[Dict]) -> List[Dict]:
+        """
+        M4修复：合并实体列表，避免重复。
+        """
+        merged = list(base_entities)
+        existing_keys = {(e["type"], e["value"]) for e in merged}
+
+        for entity in new_entities:
+            key = (entity.get("type"), entity.get("value"))
+            if key not in existing_keys:
+                existing_keys.add(key)
+                merged.append(entity)
+
+        return merged
+
+    def _extract_approval_entities(self, text: str, extracted_keys: set) -> List[Dict[str, str]]:
+        """提取审批相关的特殊实体。"""
+        entities = []
+
+        # 提取动作
+        for action_type, pattern in self.ACTION_PATTERNS.items():
+            if re.search(pattern, text):
+                if not any(("action", action_type) == key for key in extracted_keys):
+                    entities.append({
+                        "type": "action",
+                        "value": action_type,
+                        "start": 0,
+                        "end": 0,
+                        "confidence": 0.95,
+                        "source": "rules"
+                    })
+                break
+
+        # 提取备注
+        inline_comment_patterns = [
+            r"(?:通过|批准|同意)[，,]?\s*([一-龥A-Za-z0-9，。！？、]+)",
+            r"(?:拒绝|驳回)[，,]?\s*([一-龥A-Za-z0-9，。！？、]+)",
+        ]
+        for pattern in inline_comment_patterns:
+            match = re.search(pattern, text)
+            if match:
+                comment_value = match.group(1).strip()
+                if not any(("comment", comment_value) == key for key in extracted_keys):
+                    entities.append({
+                        "type": "comment",
+                        "value": comment_value,
+                        "start": match.start(1),
+                        "end": match.end(1),
+                        "confidence": 0.9,
+                        "source": "rules"
+                    })
+                break
+
+        return entities
+
     def _detect_intent_level_1(self, text: str) -> str:
-        """Detect first level intent."""
+        """
+        Detect first level intent.
+
+        L15修复：添加否定词检查，避免误判
+        """
         text_lower = text.lower()
+
+        # L15修复：检查否定词，如果匹配则跳过意图检测
+        for neg_pattern in self.NEGATION_PATTERNS:
+            if re.search(neg_pattern, text_lower):
+                # 包含否定词，返回默认意图
+                return "信息查询"
 
         # Check each intent pattern
         for intent_name, intent_info in self.INTENT_PATTERNS.items():
@@ -347,7 +693,8 @@ class ParserAgent:
     def _extract_entities(self, text: str, intent_level_1: str) -> List[Dict[str, str]]:
         """Extract entities from text using rules and optional BERT NER."""
         entities = []
-        extracted_values = set()  # 防止重复提取
+        # 使用(类型,值)元组作为去重键，避免相同值不同类型的实体被错误跳过
+        extracted_keys = set()
 
         # Step 1: 规则提取 (始终执行，作为基础)
         for entity_type, pattern in self.ENTITY_PATTERNS.items():
@@ -359,11 +706,12 @@ class ParserAgent:
                 else:
                     value = match.group()
 
-                # 避免重复提取
-                if value in extracted_values:
+                # 使用(类型,值)元组去重
+                entity_key = (entity_type, value)
+                if entity_key in extracted_keys:
                     continue
 
-                extracted_values.add(value)
+                extracted_keys.add(entity_key)
                 entities.append({
                     "type": entity_type,
                     "value": value,
@@ -378,8 +726,9 @@ class ParserAgent:
                 bert_entities = self._bert_ner.extract_for_intent(text, intent_level_1)
                 # 合并BERT结果，只添加规则未覆盖的
                 for entity in bert_entities:
-                    if entity["value"] not in extracted_values:
-                        extracted_values.add(entity["value"])
+                    entity_key = (entity.get("type"), entity.get("value"))
+                    if entity_key not in extracted_keys:
+                        extracted_keys.add(entity_key)
                         entities.append(entity)
             except Exception as e:
                 print(f"⚠️ BERT NER提取失败: {e}")
@@ -578,32 +927,60 @@ class ParserAgent:
         """
         计算意图识别置信度（仅基于规则匹配，不依赖实体）
 
-        置信度计算规则：
-        - 基础分: 0.4
-        - 一级意图模式命中: +0.2
-        - 二级意图关键词命中: +0.2
-        - 文本长度合理(>=5): +0.1
-        - 短文本惩罚(<5): -0.1
+        置信度计算规则（改进版）：
+        - 基础分: 0.3（规则匹配起始点，表示最低可信度）
+        - 一级意图模式命中: +0.35（核心意图识别贡献）
+        - 二级意图关键词命中: +0.25（细化意图分类贡献）
+        - 多模式匹配加成: 每额外命中一个模式+0.05（最高+0.1）
+        - 文本特征修正: 基于特征完整性而非单纯长度
+
+        置信度分级：
+        - 0.9+: 高置信度（模式完全匹配）
+        - 0.7-0.9: 中等置信度（基本模式匹配）
+        - 0.5-0.7: 低置信度（部分匹配）
+        - 0.5以下: 极低置信度（几乎无匹配）
         """
-        confidence = 0.4  # Base confidence
+        confidence = 0.3  # 基础分：规则匹配的起始可信度
 
         # 一级意图模式匹配加分
         intent_info = self.INTENT_PATTERNS.get(intent_level_1, {})
         patterns = intent_info.get("patterns", [])
+        matched_patterns = 0
         for pattern in patterns:
             if re.search(pattern, text.lower()):
-                confidence += 0.2
-                break
+                matched_patterns += 1
+
+        # 首个模式命中给予主要分数
+        if matched_patterns > 0:
+            confidence += 0.35
+            # 额外模式匹配给予加成（最高0.1）
+            confidence += min(0.1, (matched_patterns - 1) * 0.05)
 
         # 二级意图关键词命中加分
         if intent_level_2 != "未知":
-            confidence += 0.2
+            confidence += 0.25
 
-        # 文本长度调整
-        if len(text) >= 5:
-            confidence += 0.1
-        else:
-            confidence -= 0.1
+        # 文本特征修正（替代简单长度判断）
+        # 考虑文本的信息密度：包含数字、特定关键词等
+        text_lower = text.lower()
+        feature_score = 0.0
+
+        # 包含数字（如订单号、客户ID）增加可信度
+        if re.search(r'\d+', text):
+            feature_score += 0.05
+
+        # 包含领域关键词增加可信度
+        domain_keywords = ['订单', '客户', '物流', '产品', '工单', '审批', '查询', '状态']
+        if any(kw in text_lower for kw in domain_keywords):
+            feature_score += 0.05
+
+        confidence += feature_score
+
+        # 短文本惩罚（小于3个字符几乎无法准确识别意图）
+        if len(text) < 3:
+            confidence -= 0.15
+        elif len(text) < 5:
+            confidence -= 0.05
 
         return max(0.1, min(1.0, confidence))  # Clamp between 0.1 and 1.0
 
@@ -650,14 +1027,16 @@ class ParserAgent:
                 "entities": List[Dict]
             }
         """
-        if not self.llm_client:
+        # M30修复：使用局部变量确保类型安全
+        llm = self.llm_client
+        if not llm:
             return None
 
         try:
             print("🔄 使用LLM进行意图识别+实体提取")
             # 使用合并的prompt模板
             prompt = COMBINED_INTENT_ENTITY_PROMPT.replace("{user_input}", text)
-            result = await self.llm_client.generate_json(prompt)
+            result = await llm.generate_json(prompt)
 
             # 标准化实体格式
             entities = result.get("entities", [])
@@ -800,25 +1179,14 @@ class ParserAgent:
         Returns:
             Clarification prompt
         """
+        from supply_chain_agent.common.protocols import get_slot_description
+
         if not missing_slots:
             return "请提供更多信息。"
 
-        slot_descriptions = {
-            "order_id": "订单号",
-            "customer_id": "客户ID",
-            "product_card_id": "产品卡片ID",
-            "work_order_id": "工单号",
-            "action": "审批动作",
-            "comment": "审批意见",
-            "work_type": "工单类型",
-            "description": "描述",
-            "issue_type": "问题类型",
-            "urgency": "紧急程度"
-        }
-
         prompts = []
         for slot in missing_slots:
-            description = slot_descriptions.get(slot, slot)
+            description = get_slot_description(slot)
             prompts.append(f"请提供{description}")
 
         if len(prompts) == 1:

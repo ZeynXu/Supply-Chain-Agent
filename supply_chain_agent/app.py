@@ -35,13 +35,109 @@ from supply_chain_agent.data.supply_chain_db import (
 )
 
 
-# 会话存储
-_sessions: Dict[str, Dict] = {}
+# 会话管理器（M21修复：统一使用LangGraph checkpoint）
+# 使用checkpoint作为主要状态存储，_session_metadata仅存储元数据
+_session_metadata: Dict[str, Dict] = {}  # 仅存储元数据：created_at, expires_at, user_id
+
+
+class SessionManager:
+    """
+    统一会话管理器，使用LangGraph checkpoint作为状态存储。
+
+    解决M21：消除_sessions与checkpoint的重叠，checkpoint作为唯一状态源。
+    """
+
+    def __init__(self):
+        from supply_chain_agent.graph.workflow import get_workflow
+        self._workflow = None
+
+    @property
+    def workflow(self):
+        """延迟加载workflow实例"""
+        if self._workflow is None:
+            self._workflow = get_workflow()
+        return self._workflow
+
+    def create_session(self, user_id: str = None, metadata: dict = None) -> dict:
+        """创建新会话，返回会话信息"""
+        session_id = f"session-{uuid.uuid4().hex[:8]}"
+        now = datetime.now()
+        expires_at = now + timedelta(hours=1)
+
+        # 仅存储元数据，状态由checkpoint管理
+        _session_metadata[session_id] = {
+            "session_id": session_id,
+            "created_at": now.isoformat(),
+            "user_id": user_id,
+            "metadata": metadata or {},
+            "expires_at": expires_at.isoformat()
+        }
+
+        return {
+            "session_id": session_id,
+            "created_at": now.isoformat(),
+            "user_id": user_id,
+            "metadata": metadata or {},
+            "expires_at": expires_at.isoformat()
+        }
+
+    def get_session_history(self, session_id: str, limit: int = 50, offset: int = 0) -> dict:
+        """从checkpoint获取会话历史"""
+        if session_id not in _session_metadata:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+        # 从checkpoint获取消息历史
+        state = self.workflow.get_state(session_id) or {}
+        messages = state.get("messages", [])
+
+        return {
+            "session_id": session_id,
+            "total_messages": len(messages),
+            "messages": messages[offset:offset + limit]
+        }
+
+    def delete_session(self, session_id: str) -> dict:
+        """删除会话"""
+        if session_id not in _session_metadata:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+        # 获取删除前的消息数量
+        state = self.workflow.get_state(session_id) or {}
+        deleted_messages = len(state.get("messages", []))
+
+        # 删除元数据
+        _session_metadata.pop(session_id)
+
+        # 清理checkpoint状态（通过graph.reset或重新初始化）
+        # LangGraph的MemorySaver会在内存中保持状态，删除元数据即可
+
+        return {
+            "success": True,
+            "message": "会话已删除",
+            "session_id": session_id,
+            "deleted_messages": deleted_messages
+        }
+
+    def session_exists(self, session_id: str) -> bool:
+        """检查会话是否存在"""
+        return session_id in _session_metadata
+
+    def get_active_sessions_count(self) -> int:
+        """获取活跃会话数"""
+        return len(_session_metadata)
+
+
+# 全局会话管理器实例
+session_manager = SessionManager()
 
 # 日志存储
 _logs: List[Dict] = []
 
-# 性能指标追踪
+# 性能指标追踪（添加容量限制常量）
+_MAX_RESPONSE_TIMES = 1000
+_MAX_TOOL_CALLS_TRACKED = 100
+_MAX_INTENTS_TRACKED = 10
+
 _metrics = {
     "start_time": datetime.now(),
     "total_requests": 0,
@@ -259,6 +355,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # L10修复：添加API版本控制路由
+    from fastapi import APIRouter
+    api_v1_router = APIRouter(prefix="/api/v1")
+
     # ==================== Composition Root ====================
     # Create all agent instances and inject dependencies
     parser = ParserAgent()
@@ -285,17 +385,34 @@ def create_app() -> FastAPI:
         return {
             "service": "Supply Chain Agent API",
             "version": "1.0.0",
+            "api_versions": {
+                "v1": "/api/v1",
+                "legacy": "/api (deprecated, use /api/v1)"
+            },
             "status": "running",
             "endpoints": {
                 "/health": "GET - Health check",
+                "/api/v1/process": "POST - Process user query (recommended)",
+                "/api/process": "POST - Process user query (legacy)",
                 "/api/status": "GET - System status",
-                "/api/process": "POST - Process user query",
-                "/api/process/batch": "POST - Batch process queries",
                 "/api/sessions": "POST - Create session",
                 "/api/memory": "GET - Memory information",
                 "/api/tools": "GET - List available tools",
-                "/api/metrics": "GET - Performance metrics",
-                "/api/workorders": "GET/POST - Workorders"
+                "/api/metrics": "GET - Performance metrics"
+            }
+        }
+
+    # L10修复：API版本信息端点
+    @app.get("/api/v1")
+    async def api_v1_info():
+        """API v1 information."""
+        return {
+            "version": "1.0.0",
+            "endpoints": {
+                "/api/v1/process": "POST - Process user query",
+                "/api/v1/process/batch": "POST - Batch process queries",
+                "/api/v1/sessions": "POST - Create session",
+                "/api/v1/status": "GET - System status"
             }
         }
 
@@ -342,7 +459,7 @@ def create_app() -> FastAPI:
             processing_time = time.time() - start_time
             _metrics["successful_requests"] += 1
             _metrics["response_times"].append(processing_time)
-            if len(_metrics["response_times"]) > 1000:
+            if len(_metrics["response_times"]) > _MAX_RESPONSE_TIMES:
                 _metrics["response_times"].pop(0)
 
             # 记录意图统计
@@ -351,10 +468,15 @@ def create_app() -> FastAPI:
             if primary_intent in _metrics["intents"]:
                 _metrics["intents"][primary_intent] += 1
 
-            # 记录工具调用
+            # 记录工具调用（带容量限制）
             tools_used = result.get("tools_used", [])
             for tool in tools_used:
                 if tool not in _metrics["tool_calls"]:
+                    # 检查是否超过容量限制，超过则清理最旧的条目
+                    if len(_metrics["tool_calls"]) >= _MAX_TOOL_CALLS_TRACKED:
+                        # 移除调用次数最少的工具
+                        min_tool = min(_metrics["tool_calls"].items(), key=lambda x: x[1]["calls"])
+                        del _metrics["tool_calls"][min_tool[0]]
                     _metrics["tool_calls"][tool] = {"calls": 0, "success": 0}
                 _metrics["tool_calls"][tool]["calls"] += 1
                 _metrics["tool_calls"][tool]["success"] += 1
@@ -473,31 +595,13 @@ def create_app() -> FastAPI:
         user_id = request.get("user_id")
         metadata = request.get("metadata", {})
 
-        session_id = f"session-{uuid.uuid4().hex[:8]}"
-        now = datetime.now()
-        expires_at = now + timedelta(hours=1)
+        result = session_manager.create_session(user_id, metadata)
 
-        session = {
-            "session_id": session_id,
-            "created_at": now.isoformat(),
-            "user_id": user_id,
-            "metadata": metadata,
-            "expires_at": expires_at.isoformat(),
-            "messages": []
-        }
-        _sessions[session_id] = session
-
-        _record_log("INFO", "session.manager", f"Session created: {session_id}", {
+        _record_log("INFO", "session.manager", f"Session created: {result['session_id']}", {
             "user_id": user_id
         })
 
-        return {
-            "session_id": session_id,
-            "created_at": now.isoformat(),
-            "user_id": user_id,
-            "metadata": metadata,
-            "expires_at": expires_at.isoformat()
-        }
+        return result
 
     @app.get("/api/sessions/{session_id}/history")
     async def get_session_history(
@@ -505,38 +609,19 @@ def create_app() -> FastAPI:
         limit: int = Query(default=50, ge=1, le=100),
         offset: int = Query(default=0, ge=0)
     ):
-        """Get session history."""
-        if session_id not in _sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-
-        session = _sessions[session_id]
-        messages = session.get("messages", [])
-
-        return {
-            "session_id": session_id,
-            "total_messages": len(messages),
-            "messages": messages[offset:offset + limit]
-        }
+        """Get session history from checkpoint."""
+        return session_manager.get_session_history(session_id, limit, offset)
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str):
         """Delete a session."""
-        if session_id not in _sessions:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-
-        session = _sessions.pop(session_id)
-        deleted_messages = len(session.get("messages", []))
+        result = session_manager.delete_session(session_id)
 
         _record_log("INFO", "session.manager", f"Session deleted: {session_id}", {
-            "deleted_messages": deleted_messages
+            "deleted_messages": result.get("deleted_messages", 0)
         })
 
-        return {
-            "success": True,
-            "message": "会话已删除",
-            "session_id": session_id,
-            "deleted_messages": deleted_messages
-        }
+        return result
 
     # ==================== 系统状态 ====================
 
@@ -565,7 +650,7 @@ def create_app() -> FastAPI:
                 "total_requests": total,
                 "success_rate": round(success_rate, 2),
                 "avg_response_time": round(avg_response_time, 2),
-                "active_sessions": len(_sessions)
+                "active_sessions": session_manager.get_active_sessions_count()
             },
             "resources": {
                 "memory_usage_mb": round(psutil.Process().memory_info().rss / 1024 / 1024, 1),
