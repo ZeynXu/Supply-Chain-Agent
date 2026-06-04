@@ -7,8 +7,9 @@ import {
   CloseCircleOutlined,
   CodeOutlined,
   RightOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
-import type { AgentTrajectory, AgentStep, ToolCall, AgentType } from '@/types/agent';
+import type { AgentTrajectory, AgentStep, ToolCall, SkillCall, AgentType } from '@/types/agent';
 import { AGENT_TYPE_LABELS, AGENT_TYPE_COLORS } from '@/types/agent';
 
 const { Text } = Typography;
@@ -109,6 +110,87 @@ const ToolCallItem = memo(({ tool }: ToolCallItemProps) => {
 
 ToolCallItem.displayName = 'ToolCallItem';
 
+// Skill 调用卡片组件
+interface SkillCallItemProps {
+  skill: SkillCall;
+}
+
+const SkillCallItem = memo(({ skill }: SkillCallItemProps) => {
+  const duration = skill.endTime
+    ? formatDuration(skill.endTime - skill.startTime)
+    : '进行中...';
+
+  return (
+    <div
+      style={{
+        padding: '8px 12px',
+        background: 'var(--bg-tertiary)',
+        borderRadius: 6,
+        marginBottom: 6,
+        border: '1px solid var(--border-light)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 4,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <BookOutlined style={{ fontSize: 12 }} />
+          <Text strong style={{ fontSize: 12 }}>
+            {skill.displayName || skill.name}
+          </Text>
+        </div>
+        <Tag
+          color={skill.status === 'success' ? 'success' : skill.status === 'error' ? 'error' : 'processing'}
+          style={{ fontSize: 10, margin: 0 }}
+        >
+          {duration}
+        </Tag>
+      </div>
+      {skill.result && (
+        <pre
+          style={{
+            margin: 0,
+            padding: 4,
+            background: 'rgba(82, 196, 26, 0.1)',
+            borderRadius: 4,
+            fontSize: 10,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+          }}
+        >
+          生成计划: {skill.result.join(' → ')}
+        </pre>
+      )}
+      {skill.error && (
+        <pre
+          style={{
+            margin: 0,
+            padding: 4,
+            background: 'rgba(255, 77, 79, 0.1)',
+            borderRadius: 4,
+            fontSize: 10,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            maxWidth: '100%',
+          }}
+        >
+          {skill.error}
+        </pre>
+      )}
+    </div>
+  );
+});
+
+SkillCallItem.displayName = 'SkillCallItem';
+
 // 步骤卡片组件
 interface StepItemProps {
   step: AgentStep;
@@ -119,12 +201,16 @@ interface StepItemProps {
 const StepItem = memo(({ step, isLast, isNew }: StepItemProps) => {
   const [jsonModalVisible, setJsonModalVisible] = useState(false);
   const [toolsExpanded, setToolsExpanded] = useState(step.status === 'running');
+  const [skillsExpanded, setSkillsExpanded] = useState(step.status === 'running');
 
   const duration = step.endTime
     ? formatDuration(step.endTime - step.startTime)
     : step.status === 'running'
       ? '进行中...'
       : '-';
+
+  const hasSkills = step.skills && step.skills.length > 0;
+  const hasTools = step.tools && step.tools.length > 0;
 
   return (
     <div
@@ -206,8 +292,42 @@ const StepItem = memo(({ step, isLast, isNew }: StepItemProps) => {
             {step.description}
           </Text>
 
+          {/* Skill 调用列表 */}
+          {hasSkills && (
+            <div style={{ marginTop: 8 }}>
+              <div
+                onClick={() => setSkillsExpanded(!skillsExpanded)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  cursor: 'pointer',
+                  color: 'var(--text-secondary)',
+                  fontSize: 12,
+                  marginBottom: skillsExpanded ? 8 : 0,
+                }}
+              >
+                <RightOutlined
+                  style={{
+                    fontSize: 10,
+                    transform: skillsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+                    transition: 'transform 0.2s',
+                  }}
+                />
+                <span>Skill 加载 ({step.skills.length})</span>
+              </div>
+              {skillsExpanded && (
+                <div>
+                  {step.skills.map((skill) => (
+                    <SkillCallItem key={skill.id} skill={skill} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 工具调用列表 */}
-          {step.tools.length > 0 && (
+          {hasTools && (
             <div style={{ marginTop: 8 }}>
               <div
                 onClick={() => setToolsExpanded(!toolsExpanded)}

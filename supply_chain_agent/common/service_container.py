@@ -69,8 +69,10 @@ class ServiceContainer:
     @staticmethod
     def _create_tool_client():
         """创建工具客户端"""
-        from supply_chain_agent.tools.client import get_tool_client
-        return get_tool_client()
+        # 直接创建 ToolClient 实例，不通过 async get_tool_client()
+        # 因为 ServiceContainer 的工厂方法是同步的
+        from supply_chain_agent.tools.client import ToolClient
+        return ToolClient()
 
     @staticmethod
     def _create_memory_manager():

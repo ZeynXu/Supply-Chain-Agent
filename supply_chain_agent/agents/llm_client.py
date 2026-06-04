@@ -115,19 +115,34 @@ class ZhipuClient(LLMClient):
         base_url: str = "https://open.bigmodel.cn/api/paas/v4",
         model: str = "glm-4.7",
         temperature: float = 0.7,
-        max_tokens: int = 65536
+        max_tokens: int = 65536,
+        thinking_enabled: bool = True  # 是否启用 thinking 模式
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.thinking_enabled = thinking_enabled
 
-    async def _do_generate(self, prompt: str, json_mode: bool = False) -> str:
+    async def _do_generate(self, prompt: str, json_mode: bool = False, max_tokens_override: int = None, thinking_override: bool = None) -> str:
         """实际执行HTTP请求（内部方法）"""
         json_prompt = prompt
         if json_mode:
             json_prompt = prompt + "\n\n请直接输出JSON格式的结果，不要包含其他文字说明。"
+
+        # 使用覆盖参数或默认值
+        actual_max_tokens = max_tokens_override if max_tokens_override is not None else self.max_tokens
+        actual_thinking = thinking_override if thinking_override is not None else self.thinking_enabled
+
+        request_body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": json_prompt}],
+            "temperature": self.temperature,
+            "max_tokens": actual_max_tokens,
+        }
+        if actual_thinking:
+            request_body["thinking"] = {"type": "enabled"}
 
         async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
             response = await client.post(
@@ -136,13 +151,7 @@ class ZhipuClient(LLMClient):
                     "Content-Type": "application/json",
                     "Authorization": self.api_key
                 },
-                json={
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": json_prompt}],
-                    "temperature": self.temperature,
-                    "max_tokens": self.max_tokens,
-                    "thinking": {"type": "enabled"}
-                }
+                json=request_body
             )
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
@@ -159,6 +168,62 @@ class ZhipuClient(LLMClient):
         try:
             return json.loads(content)
         except json.JSONDecodeError:
+            # 尝试从markdown代码块中提取
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                if end > start:
+                    return json.loads(content[start:end].strip())
+            elif "```" in content:
+                start = content.find("```") + 3
+                end = content.find("```", start)
+                if end > start:
+                    return json.loads(content[start:end].strip())
+            raise
+
+    async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
+        """
+        快速生成JSON格式响应（优化版）
+
+        用于简单的结构化输出任务，关闭 thinking 模式，减少 token 数量。
+
+        Args:
+            prompt: 输入 prompt
+            max_tokens: 最大 token 数，默认 1024
+
+        Returns:
+            JSON 格式的响应
+
+        Raises:
+            json.JSONDecodeError: 如果输出被截断导致 JSON 解析失败
+        """
+        # 关闭 thinking 模式，减少 max_tokens
+        content = await _execute_with_retry(
+            self._do_generate, prompt,
+            json_mode=True,
+            max_tokens_override=max_tokens,
+            thinking_override=False
+        )
+
+        # 尝试解析JSON
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            # 检查是否可能是输出截断
+            if len(content) >= max_tokens * 3:  # 粗略估计：1 token ≈ 3 chars
+                print(f"⚠️ 输出可能被截断 (max_tokens={max_tokens}), 尝试增加限制重试...")
+                # 尝试双倍 token 重试
+                content = await _execute_with_retry(
+                    self._do_generate, prompt,
+                    json_mode=True,
+                    max_tokens_override=max_tokens * 2,
+                    thinking_override=False
+                )
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+
             # 尝试从markdown代码块中提取
             if "```json" in content:
                 start = content.find("```json") + 7
@@ -345,23 +410,25 @@ class CachedLLMClient(LLMClient):
         Returns:
             完整的 prompt
         """
-        full_prompt = f"""## Skill 上下文
+        # 精简 prompt，只包含必要信息
+        full_prompt = f"""## 流程指导
 
 {skill_content}
 
-## 用户请求
+## 任务
 
 {prompt}
+
+## 输出格式
+
+直接输出工具名称列表的 JSON 数组，如：
+["query_work_order", "query_order", "query_customer_statistics"]
 """
-        if additional_context:
-            import json
+        if additional_context and len(additional_context) > 0:
             full_prompt += f"""
+## 可用参数
 
-## 额外上下文
-
-```json
-{json.dumps(additional_context, ensure_ascii=False, indent=2)}
-```
+{json.dumps(additional_context.get("entities", {}), ensure_ascii=False)}
 """
         return full_prompt
 
@@ -369,7 +436,9 @@ class CachedLLMClient(LLMClient):
         self,
         prompt: str,
         skill_name: str,
-        additional_context: Optional[Dict[str, Any]] = None
+        additional_context: Optional[Dict[str, Any]] = None,
+        fast_mode: bool = True,
+        max_tokens: int = 1024
     ) -> Dict:
         """
         带 skill 上下文生成响应
@@ -378,13 +447,20 @@ class CachedLLMClient(LLMClient):
             prompt: 用户 prompt
             skill_name: skill 名称
             additional_context: 额外上下文
+            fast_mode: 是否使用快速模式（关闭 thinking，减少 token），默认 True
+            max_tokens: 最大 token 数，默认 1024
 
         Returns:
             JSON 格式的响应
         """
         skill_content = self.load_skill(skill_name)
         full_prompt = self._build_skill_prompt(skill_content, prompt, additional_context)
-        return await self.generate_json(full_prompt)
+
+        if fast_mode and hasattr(self.inner, 'generate_json_fast'):
+            # 使用快速生成模式
+            return await self.inner.generate_json_fast(full_prompt, max_tokens=max_tokens)
+        else:
+            return await self.generate_json(full_prompt)
 
 
 # 单例实例

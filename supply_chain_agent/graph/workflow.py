@@ -54,6 +54,7 @@ class SupplyChainWorkflow:
         self.executor = executor
         self.auditor = auditor
         self.report_generator = report_generator
+        self._current_emit_event = None  # 当前事件发送回调
 
         self.checkpointer = MemorySaver()
         self.workflow = StateGraph(AgentState)
@@ -208,14 +209,23 @@ class SupplyChainWorkflow:
         M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
         """
         print("[进入节点: plan_task - 任务规划节点]")
+        print(f"[Workflow] self.executor: {self.executor}, self._current_emit_event: {self._current_emit_event is not None}")
 
         try:
             # Use injected executor instance
             if self.executor:
+                # 设置事件发送回调
+                print(f"[Workflow] executor 存在，检查 set_emit_event 方法...")
+                if hasattr(self.executor, 'set_emit_event'):
+                    print(f"[Workflow] 设置 executor 事件回调: {self._current_emit_event is not None}")
+                    self.executor.set_emit_event(self._current_emit_event)
+                else:
+                    print(f"[Workflow] executor 没有 set_emit_event 方法!")
                 tasks = await self.executor.create_execution_plan(state.get("user_intent", {}))
             else:
+                print(f"[Workflow] executor 不存在，创建新实例")
                 from supply_chain_agent.agents.executor import ExecutorAgent
-                executor = ExecutorAgent()
+                executor = ExecutorAgent(emit_event=self._current_emit_event)
                 tasks = await executor.create_execution_plan(state.get("user_intent", {}))
 
             return {
@@ -918,15 +928,18 @@ class SupplyChainWorkflow:
         # Node 3: Task Planner
         async def plan_task_node(state: AgentState) -> Dict[str, Any]:
             """Plan execution tasks based on intent."""
-            print("[进入节点: plan_task - 任务规划节点]")
+            print("[进入节点: plan_task - 任务规划节点 (setup_nodes)]")
 
             try:
                 # Use injected executor instance
                 if self.executor:
+                    # 设置事件发送回调
+                    if hasattr(self.executor, 'set_emit_event'):
+                        self.executor.set_emit_event(self._current_emit_event)
                     tasks = await self.executor.create_execution_plan(state.get("user_intent", {}))
                 else:
                     from supply_chain_agent.agents.executor import ExecutorAgent
-                    executor = ExecutorAgent()
+                    executor = ExecutorAgent(emit_event=self._current_emit_event)
                     tasks = await executor.create_execution_plan(state.get("user_intent", {}))
 
                 return {
@@ -985,6 +998,10 @@ class SupplyChainWorkflow:
             if executor is None:
                 from supply_chain_agent.agents.executor import ExecutorAgent
                 executor = ExecutorAgent()
+
+            # 设置事件发送回调
+            if hasattr(executor, 'set_emit_event'):
+                executor.set_emit_event(self._current_emit_event)
 
             if not state.get("task_queue"):
                 return {"execution_complete": True}
@@ -1711,6 +1728,8 @@ class SupplyChainWorkflow:
         """
         M1修复：处理工作流并发送事件（从Orchestrator移过来）。
 
+        使用 astream_events 获取节点开始/结束事件，实现实时进度显示。
+
         Args:
             user_input: 用户输入
             thread_id: 线程ID
@@ -1719,6 +1738,9 @@ class SupplyChainWorkflow:
         Returns:
             最终状态
         """
+        # 设置当前事件回调，供节点使用
+        self._current_emit_event = emit_event
+
         initial_state = state_manager.create_initial_state(user_input)
         config = {"configurable": {"thread_id": thread_id}}
 
@@ -1733,52 +1755,66 @@ class SupplyChainWorkflow:
                 else:
                     emit_event(event_type, data)
 
-        # Stream the workflow execution
-        async for event in self.graph.astream(initial_state, config=config):
-            for node_name, node_output in event.items():
-                if node_name == "__interrupt__":
-                    if isinstance(node_output, tuple):
-                        return {"__interrupt__": [node_output]}
-                    elif isinstance(node_output, list):
-                        return {"__interrupt__": node_output}
-                    elif isinstance(node_output, dict):
-                        return {"__interrupt__": [node_output]}
-                    else:
-                        return {"__interrupt__": [(node_output,)]}
+        # 使用 astream_events 获取节点开始/结束事件
+        try:
+            async for event in self.graph.astream_events(initial_state, config=config, version="v2"):
+                event_kind = event.get("event")
+                event_name = event.get("name")
+                event_data = event.get("data", {})
 
-                if node_name in node_metadata:
-                    step_counter += 1
-                    step_id = f"{node_name}-{step_counter}"
-                    metadata = node_metadata[node_name]
+                # 处理节点开始事件
+                if event_kind == "on_chain_start":
+                    # event_name 格式为节点名称
+                    if event_name in node_metadata:
+                        step_counter += 1
+                        step_id = f"{event_name}-{step_counter}"
+                        metadata = node_metadata[event_name]
 
-                    await emit("step_start", {
-                        "stepId": step_id,
-                        "agentType": metadata["agentType"],
-                        "title": metadata["title"],
-                        "description": metadata["description"]
-                    })
+                        await emit("step_start", {
+                            "stepId": step_id,
+                            "agentType": metadata["agentType"],
+                            "title": metadata["title"],
+                            "description": metadata["description"]
+                        })
 
-                    if node_name == "execute_task" and isinstance(node_output, dict):
-                        tool_results = node_output.get("tool_results", {})
-                        for tool_name, tool_result in tool_results.items():
-                            await emit("tool_call", {
-                                "stepId": step_id,
-                                "toolCall": {
-                                    "id": f"tool-{tool_name}-{step_counter}",
-                                    "name": tool_name,
-                                    "parameters": {},
-                                    "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
-                                    "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
-                                    "startTime": int(time.time() * 1000),
-                                    "endTime": int(time.time() * 1000)
-                                }
-                            })
+                # 处理节点结束事件
+                elif event_kind == "on_chain_end":
+                    if event_name in node_metadata:
+                        step_id = f"{event_name}-{step_counter}"
+                        node_output = event_data.get("output", {})
 
-                    await emit("step_end", {"stepId": step_id})
+                        # 发送工具调用事件（execute_task 节点）
+                        if event_name == "execute_task" and isinstance(node_output, dict):
+                            tool_results = node_output.get("tool_results", {})
+                            for tool_name, tool_result in tool_results.items():
+                                await emit("tool_call", {
+                                    "stepId": step_id,
+                                    "toolCall": {
+                                        "id": f"tool-{tool_name}-{step_counter}",
+                                        "name": tool_name,
+                                        "parameters": {},
+                                        "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
+                                        "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
+                                        "startTime": int(time.time() * 1000),
+                                        "endTime": int(time.time() * 1000)
+                                    }
+                                })
 
-                current_state = {**current_state, **node_output} if isinstance(node_output, dict) else current_state
+                        await emit("step_end", {"stepId": step_id})
 
-        return current_state
+                        # 更新状态
+                        if isinstance(node_output, dict):
+                            current_state = {**current_state, **node_output}
+
+                # 处理中断事件
+                elif event_kind == "on_interrupt":
+                    interrupt_data = event_data.get("value", {})
+                    return {"__interrupt__": [interrupt_data] if isinstance(interrupt_data, dict) else interrupt_data}
+
+            return current_state
+        finally:
+            # 清除事件回调
+            self._current_emit_event = None
 
     async def resume_with_events(
         self,
@@ -1789,6 +1825,8 @@ class SupplyChainWorkflow:
         """
         M1修复：恢复工作流并发送事件（从Orchestrator移过来）。
 
+        使用 astream_events 获取节点开始/结束事件，实现实时进度显示。
+
         Args:
             user_input: 用户澄清输入
             thread_id: 线程ID
@@ -1798,6 +1836,9 @@ class SupplyChainWorkflow:
             最终状态
         """
         from langgraph.types import Command
+
+        # 设置当前事件回调，供节点使用
+        self._current_emit_event = emit_event
 
         config = {"configurable": {"thread_id": thread_id}}
         node_metadata = self.NODE_METADATA
@@ -1811,51 +1852,64 @@ class SupplyChainWorkflow:
                 else:
                     emit_event(event_type, data)
 
-        async for event in self.graph.astream(Command(resume=user_input), config=config):
-            for node_name, node_output in event.items():
-                if node_name == "__interrupt__":
-                    if isinstance(node_output, tuple):
-                        return {"__interrupt__": [node_output]}
-                    elif isinstance(node_output, list):
-                        return {"__interrupt__": node_output}
-                    elif isinstance(node_output, dict):
-                        return {"__interrupt__": [node_output]}
-                    else:
-                        return {"__interrupt__": [(node_output,)]}
+        try:
+            async for event in self.graph.astream_events(Command(resume=user_input), config=config, version="v2"):
+                event_kind = event.get("event")
+                event_name = event.get("name")
+                event_data = event.get("data", {})
 
-                if node_name in node_metadata:
-                    step_counter += 1
-                    step_id = f"{node_name}-{step_counter}"
-                    metadata = node_metadata[node_name]
+                # 处理节点开始事件
+                if event_kind == "on_chain_start":
+                    if event_name in node_metadata:
+                        step_counter += 1
+                        step_id = f"{event_name}-{step_counter}"
+                        metadata = node_metadata[event_name]
 
-                    await emit("step_start", {
-                        "stepId": step_id,
-                        "agentType": metadata["agentType"],
-                        "title": metadata["title"],
-                        "description": metadata["description"]
-                    })
+                        await emit("step_start", {
+                            "stepId": step_id,
+                            "agentType": metadata["agentType"],
+                            "title": metadata["title"],
+                            "description": metadata["description"]
+                        })
 
-                    if node_name == "execute_task" and isinstance(node_output, dict):
-                        tool_results = node_output.get("tool_results", {})
-                        for tool_name, tool_result in tool_results.items():
-                            await emit("tool_call", {
-                                "stepId": step_id,
-                                "toolCall": {
-                                    "id": f"tool-{tool_name}-{step_counter}",
-                                    "name": tool_name,
-                                    "parameters": {},
-                                    "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
-                                    "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
-                                    "startTime": int(time.time() * 1000),
-                                    "endTime": int(time.time() * 1000)
-                                }
-                            })
+                # 处理节点结束事件
+                elif event_kind == "on_chain_end":
+                    if event_name in node_metadata:
+                        step_id = f"{event_name}-{step_counter}"
+                        node_output = event_data.get("output", {})
 
-                    await emit("step_end", {"stepId": step_id})
+                        # 发送工具调用事件（execute_task 节点）
+                        if event_name == "execute_task" and isinstance(node_output, dict):
+                            tool_results = node_output.get("tool_results", {})
+                            for tool_name, tool_result in tool_results.items():
+                                await emit("tool_call", {
+                                    "stepId": step_id,
+                                    "toolCall": {
+                                        "id": f"tool-{tool_name}-{step_counter}",
+                                        "name": tool_name,
+                                        "parameters": {},
+                                        "response": tool_result if isinstance(tool_result, dict) else {"result": str(tool_result)},
+                                        "status": "success" if not (isinstance(tool_result, dict) and tool_result.get("error")) else "error",
+                                        "startTime": int(time.time() * 1000),
+                                        "endTime": int(time.time() * 1000)
+                                    }
+                                })
 
-                current_state = {**current_state, **node_output} if isinstance(node_output, dict) else current_state
+                        await emit("step_end", {"stepId": step_id})
 
-        return current_state
+                        # 更新状态
+                        if isinstance(node_output, dict):
+                            current_state = {**current_state, **node_output}
+
+                # 处理中断事件
+                elif event_kind == "on_interrupt":
+                    interrupt_data = event_data.get("value", {})
+                    return {"__interrupt__": [interrupt_data] if isinstance(interrupt_data, dict) else interrupt_data}
+
+            return current_state
+        finally:
+            # 清除事件回调
+            self._current_emit_event = None
 
 
 # Global workflow instance (lazy initialization)

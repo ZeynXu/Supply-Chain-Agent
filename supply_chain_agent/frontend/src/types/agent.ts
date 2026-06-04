@@ -15,6 +15,17 @@ export interface ToolCall {
   status: StepStatus;
 }
 
+export interface SkillCall {
+  id: string;
+  name: string;
+  displayName: string;
+  status: StepStatus;
+  startTime: number;
+  endTime?: number;
+  result?: string[];
+  error?: string;
+}
+
 export interface AgentStep {
   id: string;
   agentType: AgentType;
@@ -24,6 +35,7 @@ export interface AgentStep {
   startTime: number;
   endTime?: number;
   tools: ToolCall[];
+  skills: SkillCall[];  // 新增：skill 调用列表
   rawData?: Record<string, unknown>;
 }
 
@@ -37,7 +49,7 @@ export interface AgentTrajectory {
 }
 
 export interface AgentEvent {
-  type: 'step_start' | 'step_end' | 'tool_call' | 'tool_result' | 'error' | 'complete';
+  type: 'step_start' | 'step_end' | 'tool_call' | 'tool_result' | 'skill_load' | 'error' | 'complete';
   timestamp: number;
   data: {
     stepId?: string;
@@ -45,6 +57,7 @@ export interface AgentEvent {
     title?: string;
     description?: string;
     toolCall?: ToolCall;
+    skillCall?: SkillCall;
     error?: string;
     raw?: Record<string, unknown>;
   };

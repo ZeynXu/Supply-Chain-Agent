@@ -1,9 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.4  
-**生成日期**: 2026年6月4日  
-**研究范围**: 完整项目代码与文档分析  
-**更新说明**: 基于代码实际实现进行全面更新，反映最新架构优化  
+**文档版本**: V2.5
+**生成日期**: 2026年6月4日
+**研究范围**: 完整项目代码与文档分析
+**更新说明**: 基于代码实际实现进行全面更新，反映最新架构优化；新增Skill系统、LLM快速生成模式、实时进度显示功能  
 
 ---
 
@@ -489,6 +489,45 @@ class LLMClient(ABC):
         pass
 ```
 
+**快速生成模式（V2.5新增）**：
+```python
+async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
+    """
+    快速生成JSON格式响应（优化版）
+
+    用于简单的结构化输出任务，关闭 thinking 模式，减少 token 数量。
+
+    优化措施：
+    - thinking_override=False: 关闭推理模式
+    - max_tokens_override: 限制输出长度（默认512）
+    - 自动检测输出截断并重试（双倍token）
+    """
+```
+
+**Skill 集成**：
+```python
+async def generate_with_skill(
+    self,
+    prompt: str,
+    skill_name: str,
+    additional_context: Optional[Dict[str, Any]] = None,
+    fast_mode: bool = True,
+    max_tokens: int = 1024
+) -> Dict:
+    """
+    带 skill 上下文生成响应
+
+    自动加载 skill 内容并构建上下文 prompt。
+    """
+```
+
+**性能对比**：
+
+| 模式 | thinking | max_tokens | 典型耗时 |
+|------|----------|------------|----------|
+| 普通模式 | 启用 | 65536 | ~35秒 |
+| 快速模式 | 禁用 | 512-1024 | ~5秒 |
+
 ### 3.6 BERT NER模块
 
 **文件位置**: `supply_chain_agent/nlp/bert_ner.py`
@@ -692,7 +731,7 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
     # 检查循环计数
     if state.get("clarification_loop_count", 0) >= 3:
         return {"max_clarification_reached": True}
-    
+
     # 使用interrupt暂停执行
     interrupt_data = {
         "type": "clarification_required",
@@ -700,7 +739,7 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
         "missing_slots": state["missing_slots"]
     }
     user_input = interrupt(interrupt_data)
-    
+
     # 返回更新后的状态
     return {
         "messages": state["messages"] + [
@@ -708,6 +747,86 @@ async def clarify_node(state: AgentState) -> Dict[str, Any]:
             {"role": "user", "content": user_input}
         ]
     }
+```
+
+### 5.4 实时事件流（V2.5新增）
+
+**使用 `astream_events` 实现节点实时进度显示**：
+
+```python
+async def process_with_events(self, user_input: str, emit_event: Callable):
+    """
+    使用 astream_events 实现实时进度显示
+
+    关键改进：
+    - on_chain_start: 节点开始时立即发送 step_start 事件
+    - on_chain_end: 节点结束时发送 step_end 事件
+    """
+    async for event in self.graph.astream_events(initial_state, config=config, version="v2"):
+        event_kind = event.get("event")
+
+        if event_kind == "on_chain_start":
+            # 节点开始执行，立即显示
+            await emit_event("step_start", {
+                "stepId": node_name,
+                "title": metadata.get("title"),
+                "description": metadata.get("description")
+            })
+
+        elif event_kind == "on_chain_end":
+            # 节点执行完成
+            await emit_event("step_end", {
+                "stepId": node_name
+            })
+```
+
+**事件回调传播**：
+
+```python
+# workflow.py 中设置事件回调
+async def plan_task_node(state: AgentState) -> Dict[str, Any]:
+    if self.executor:
+        if hasattr(self.executor, 'set_emit_event'):
+            self.executor.set_emit_event(self._current_emit_event)
+    # ... 节点逻辑
+```
+
+**前端事件处理**：
+
+```typescript
+// conversationStore.ts
+handleAgentEvent: (event) => {
+  switch (event.type) {
+    case 'step_start':
+      // 立即添加步骤到轨迹
+      addAgentStep({ id: stepId, status: 'running', ... });
+      break;
+    case 'step_end':
+      // 更新步骤状态为成功
+      updateAgentStep(stepId, { status: 'success' });
+      break;
+    case 'skill_load':
+      // 处理 Skill 加载事件
+      // 使用 pendingSkills 处理事件顺序问题
+      break;
+  }
+}
+```
+
+**PendingSkills 机制**：
+
+处理 Skill 事件可能在 step_start 之前到达的情况：
+
+```typescript
+// 使用 Map 存储待关联的 skills
+pendingSkills: Map<string, SkillCall[]>
+
+// step_start 时检查并关联
+const pendingSkillsForStep = get().pendingSkills.get(stepPrefix) || [];
+get().addAgentStep({
+  id: newStepId,
+  skills: pendingSkillsForStep,  // 使用待关联的 skills
+});
 ```
 
 ---
@@ -786,6 +905,75 @@ class ShortTermMemory:
 | `memory_items` | 记忆项存储 | 对话/操作记忆 |
 | `tool_usage_stats` | 工具使用统计 | 成功/失败次数、耗时 |
 | `work_order_records` | 工单处理记录 | 完整处理流程记录 |
+
+---
+
+## Skill 系统
+
+Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采用渐进式披露（Progressive Disclosure）的上下文工程技术。
+
+### 审批工单 Skill
+
+当检测到审批工单意图时，系统自动加载 `approval_workflow` skill：
+
+- **位置**: `supply_chain_agent/skills/approval_workflow/`
+- **触发条件**: `intent_level_2 = "审批工单"`
+- **功能**: 指导 LLM 生成执行计划、提取参数、执行工具
+
+### Skill 结构
+
+```
+skills/
+└── approval_workflow/
+    ├── SKILL.md              # 主 skill 文件
+    └── procedures/           # 渐进式披露子流程
+        ├── plan_generation.md
+        ├── param_extraction.md
+        └── tool_execution.md
+```
+
+### 配置选项
+
+通过环境变量配置 Skill 行为：
+
+| 环境变量 | 默认值 | 说明 |
+|---------|-------|------|
+| `SCA_USE_SKILL_FOR_APPROVAL` | `true` | 启用 skill 模式处理审批工单 |
+| `SCA_SKILL_FALLBACK_TO_PROMPT` | `true` | skill 加载失败时降级到 prompt |
+
+### 工作原理
+
+1. **意图识别**: ParserAgent 识别用户意图为"审批工单"
+2. **Skill 加载**: ExecutorAgent 通过 LLMClient 加载 approval_workflow skill
+3. **执行计划生成**: LLM 根据 skill 指导生成执行计划
+4. **Fallback 机制**: 如果 skill 加载失败，自动降级到 prompt 模式
+
+### LLM 快速生成模式
+
+为优化 Skill 加载性能，`LLMClient` 提供快速生成模式：
+
+```python
+async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
+    """
+    快速生成JSON格式响应（优化版）
+
+    - 关闭 thinking 模式，减少推理时间
+    - 减少 max_tokens（默认512），加快生成速度
+    - 自动检测输出截断并重试
+    """
+```
+
+**性能优化效果**：
+- Skill 加载时间从 ~35秒 降至 ~5秒
+- 适用于简单的结构化输出任务
+
+### 前端 Skill 加载显示
+
+前端 Agent 执行轨迹面板实时显示 Skill 加载过程：
+
+- **实时事件流**: 使用 LangGraph `astream_events` API 实现节点进入时立即显示
+- **Skill 卡片**: 与工具调用卡片风格一致，显示加载状态、耗时、结果
+- **PendingSkills 机制**: 处理事件顺序问题，确保 Skill 正确关联到对应步骤
 
 ---
 
@@ -915,6 +1103,63 @@ async def _fallback_response(self, user_input: str, intent_info: Dict, error: st
 | `/tools` | 工具页 | 工具管理与测试 |
 | `/settings` | 设置页 | 系统配置 |
 
+### 8.3 Agent执行轨迹面板（V2.5增强）
+
+**组件位置**: `supply_chain_agent/frontend/src/components/agent/AgentTrajectory.tsx`
+
+**功能特性**：
+- 实时显示 Agent 执行步骤和进度
+- Skill 加载卡片（与工具调用风格一致）
+- 自动滚动到最新步骤
+- 步骤详情 JSON 查看
+
+**Skill 加载显示**：
+
+```typescript
+// SkillCallItem 组件
+const SkillCallItem = memo(({ skill }: SkillCallItemProps) => {
+  return (
+    <div style={{ padding: '8px 12px', background: 'var(--bg-tertiary)', borderRadius: 6 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+        <Text strong>{skill.displayName || skill.name}</Text>
+        <Tag color={skill.status === 'success' ? 'success' : 'processing'}>
+          {duration}
+        </Tag>
+      </div>
+      {skill.result && <pre>生成计划: {skill.result.join(' → ')}</pre>}
+    </div>
+  );
+});
+```
+
+**事件类型定义**：
+
+```typescript
+// types/agent.ts
+interface SkillCall {
+  id: string;
+  name: string;
+  displayName?: string;
+  status: 'pending' | 'running' | 'success' | 'error';
+  startTime: number;
+  endTime?: number;
+  result?: string[];
+  error?: string;
+}
+
+interface AgentStep {
+  id: string;
+  agentType: AgentType;
+  title: string;
+  description: string;
+  status: 'pending' | 'running' | 'success' | 'error';
+  startTime: number;
+  endTime?: number;
+  tools: ToolCall[];
+  skills: SkillCall[];  // 新增：Skill 调用列表
+}
+```
+
 ---
 
 ## 9. 评估体系与性能指标
@@ -1028,9 +1273,20 @@ class Settings(BaseSettings):
    - 第三层：LLM兜底（意图分类+实体提取）
    - 职责分离清晰，降低LLM调用频率
 
-2. **熔断器模式**: 工具调用熔断保护，防止故障扩散
-3. **知识库降级**: 工具不可用时，知识库检索+LLM生成友好提示，**不返回假数据**
-4. **审批二次确认**: 危险操作（审批）必须用户二次确认
+2. **Skill系统与渐进式披露**:
+   - 使用 Skill 指导 LLM 完成特定任务
+   - 渐进式披露减少 token 消耗
+   - 快速生成模式优化（关闭 thinking，限制 max_tokens）
+   - Skill 加载从 ~35秒 优化至 ~5秒
+
+3. **实时进度显示**:
+   - 使用 LangGraph `astream_events` API
+   - 节点进入时立即显示，而非完成后显示
+   - PendingSkills 机制处理事件顺序问题
+
+4. **熔断器模式**: 工具调用熔断保护，防止故障扩散
+5. **知识库降级**: 工具不可用时，知识库检索+LLM生成友好提示，**不返回假数据**
+6. **审批二次确认**: 危险操作（审批）必须用户二次确认
 
 ### 12.3 工程实践
 
@@ -1067,9 +1323,9 @@ class Settings(BaseSettings):
 | Config | config.py | ~148 | 配置管理 |
 | State | state.py | ~223 | 状态定义 |
 | Report Generator | report_generator.py | ~475 | 报告生成器 |
-| LLM Client | llm_client.py | ~205 | LLM客户端 |
+| LLM Client | llm_client.py | ~575 | LLM客户端（含快速生成模式）|
 
-**总计**: 约 ~7642 行核心代码
+**总计**: 约 ~8000 行核心代码
 
 ---
 

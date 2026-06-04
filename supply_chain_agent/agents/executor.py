@@ -9,7 +9,7 @@ Task Classification:
 - Level 2: Based on MCP tools provided
 """
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Awaitable
 import asyncio
 from dataclasses import dataclass
 import time
@@ -187,7 +187,10 @@ class ExecutorAgent:
     # 执行历史限制常量（M28修复）
     MAX_EXECUTION_HISTORY = 100
 
-    def __init__(self):
+    def __init__(self, emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None):
+        self.task_queue: List[Task] = []
+        self.execution_history: List[Dict[str, Any]] = []
+        self._emit_event = emit_event  # 事件发送回调
         self.task_queue: List[Task] = []
         self.execution_history: List[Dict[str, Any]] = []
 
@@ -221,6 +224,22 @@ class ExecutorAgent:
 
         # 缓存的AGENT.md内容
         self._agent_md_content: Optional[str] = None
+
+    def set_emit_event(self, emit_event: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]]):
+        """设置事件发送回调"""
+        self._emit_event = emit_event
+
+    async def _emit(self, event_type: str, data: Dict[str, Any]):
+        """发送事件的辅助方法"""
+        print(f"[Executor] 发送事件: {event_type}, data: {data}")
+        if self._emit_event:
+            try:
+                await self._emit_event(event_type, data)
+                print(f"[Executor] 事件发送成功: {event_type}")
+            except Exception as e:
+                print(f"⚠️ 发送事件失败: {e}")
+        else:
+            print(f"⚠️ _emit_event 未设置，无法发送事件")
 
     def _load_agent_md(self) -> str:
         """加载AGENT.md文件内容"""
@@ -314,48 +333,99 @@ class ExecutorAgent:
         Returns:
             任务名称列表
         """
-        llm_client = self._get_llm_client_for_skill()
+        skill_name = "approval_workflow"
+        skill_start_time = int(time.time() * 1000)
 
-        # 提取实体信息
-        extracted_slots = intent.get("entities", [])
-        slot_dict = {}
-        for entity in extracted_slots:
-            if isinstance(entity, dict):
-                slot_dict[entity.get("type")] = entity.get("value")
-
-        # 使用 skill 上下文生成计划
-        result = await llm_client.generate_with_skill(
-            prompt="根据审批工单流程，生成执行计划。请输出 JSON 格式的任务列表。",
-            skill_name="approval_workflow",
-            additional_context={
-                "entities": slot_dict,
-                "intent": intent.get("intent_level_2", "")
+        # 发送 skill 加载开始事件
+        await self._emit("skill_load", {
+            "stepId": "plan_task-skill",
+            "skillCall": {
+                "id": f"skill-{skill_name}-{skill_start_time}",
+                "name": skill_name,
+                "displayName": "审批工单流程",
+                "status": "running",
+                "startTime": skill_start_time
             }
-        )
+        })
 
-        # 解析 LLM 返回的任务列表
-        # 处理 LLM 可能返回列表或字典的情况
-        if isinstance(result, list):
-            # LLM 直接返回了任务列表
-            tasks = result
-        elif isinstance(result, dict):
-            # LLM 返回了包含 tasks 键的字典
-            tasks = result.get("tasks", [])
-        else:
-            print(f"⚠️ LLM 返回格式异常: {type(result)}")
-            tasks = []
+        try:
+            llm_client = self._get_llm_client_for_skill()
 
-        task_names = []
-        for task in tasks:
-            if isinstance(task, dict):
-                tool_name = task.get("tool", "")
-                if tool_name:
-                    task_names.append(tool_name)
-            elif isinstance(task, str):
-                # 任务可能是直接的字符串
-                task_names.append(task)
+            # 提取实体信息
+            extracted_slots = intent.get("entities", [])
+            slot_dict = {}
+            for entity in extracted_slots:
+                if isinstance(entity, dict):
+                    slot_dict[entity.get("type")] = entity.get("value")
 
-        print(f"📋 Skill 生成的执行计划: {task_names}")
+            # 使用 skill 上下文生成计划（快速模式）
+            result = await llm_client.generate_with_skill(
+                prompt="根据流程指导，输出需要执行的工具列表。",
+                skill_name=skill_name,
+                additional_context={
+                    "entities": slot_dict,
+                },
+                fast_mode=True,
+                max_tokens=512  # 执行计划需要少量 token，512 有足够余量
+            )
+
+            # 解析 LLM 返回的任务列表
+            # 处理 LLM 可能返回列表或字典的情况
+            if isinstance(result, list):
+                # LLM 直接返回了任务列表
+                tasks = result
+            elif isinstance(result, dict):
+                # LLM 返回了包含 tasks 键的字典
+                tasks = result.get("tasks", [])
+            else:
+                print(f"⚠️ LLM 返回格式异常: {type(result)}")
+                tasks = []
+
+            task_names = []
+            for task in tasks:
+                if isinstance(task, dict):
+                    tool_name = task.get("tool", "")
+                    if tool_name:
+                        task_names.append(tool_name)
+                elif isinstance(task, str):
+                    # 任务可能是直接的字符串
+                    task_names.append(task)
+
+            print(f"📋 Skill 生成的执行计划: {task_names}")
+
+            # 发送 skill 加载成功事件
+            skill_end_time = int(time.time() * 1000)
+            await self._emit("skill_load", {
+                "stepId": "plan_task-skill",
+                "skillCall": {
+                    "id": f"skill-{skill_name}-{skill_start_time}",
+                    "name": skill_name,
+                    "displayName": "审批工单流程",
+                    "status": "success",
+                    "startTime": skill_start_time,
+                    "endTime": skill_end_time,
+                    "result": task_names
+                }
+            })
+
+            return task_names
+
+        except Exception as e:
+            # 发送 skill 加载失败事件
+            skill_end_time = int(time.time() * 1000)
+            await self._emit("skill_load", {
+                "stepId": "plan_task-skill",
+                "skillCall": {
+                    "id": f"skill-{skill_name}-{skill_start_time}",
+                    "name": skill_name,
+                    "displayName": "审批工单流程",
+                    "status": "error",
+                    "startTime": skill_start_time,
+                    "endTime": skill_end_time,
+                    "error": str(e)
+                }
+            })
+            raise
 
         return task_names
 
@@ -624,7 +694,8 @@ class ExecutorAgent:
     async def _execute_tool(self, task: Task) -> Dict[str, Any]:
         """Execute a tool with intelligent retry logic."""
         # H4修复：通过ServiceContainer获取tool_client
-        client = await ServiceContainer.get_tool_client()
+        # 注意：get_tool_client 是同步方法，不需要 await
+        client = ServiceContainer.get_tool_client()
 
         # 使用智能重试管理器（如果可用）
         if self.retry_manager and RETRY_MANAGER_AVAILABLE:

@@ -27,6 +27,8 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-03: 架构优化：创建完整异常层次结构；明确Orchestrator职责边界，剥离Workflow类等
 >
+> 2026-06-04: skill加载方案实现审批工单意图下的工具调用规划；前端优化
+>
 
 ---
 
@@ -461,6 +463,34 @@ skills/
 2. **Skill 加载**: ExecutorAgent 通过 LLMClient 加载 approval_workflow skill
 3. **执行计划生成**: LLM 根据 skill 指导生成执行计划
 4. **Fallback 机制**: 如果 skill 加载失败，自动降级到 prompt 模式
+
+### LLM 快速生成模式
+
+为优化 Skill 加载性能，`LLMClient` 提供快速生成模式：
+
+```python
+async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
+    """
+    快速生成JSON格式响应（优化版）
+    - 关闭 thinking 模式，减少推理时间
+    - 减少 max_tokens（默认512），加快生成速度
+    """
+```
+
+**性能优化效果**：
+
+| 模式 | thinking | max_tokens | 典型耗时 |
+|------|----------|------------|----------|
+| 普通模式 | 启用 | 65536 | ~35秒 |
+| 快速模式 | 禁用 | 512-1024 | ~5秒 |
+
+### 前端实时进度显示
+
+前端 Agent 执行轨迹面板实时显示 Skill 加载过程：
+
+- **实时事件流**: 使用 LangGraph `astream_events` API，节点进入时立即显示
+- **Skill 卡片**: 与工具调用卡片风格一致，显示加载状态、耗时、结果
+- **PendingSkills 机制**: 处理事件顺序问题，确保 Skill 正确关联到对应步骤
 
 ## 🏗️ 架构设计
 
