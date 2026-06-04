@@ -334,8 +334,26 @@ class ExecutorAgent:
         )
 
         # 解析 LLM 返回的任务列表
-        tasks = result.get("tasks", [])
-        task_names = [task.get("tool", "") for task in tasks if task.get("tool")]
+        # 处理 LLM 可能返回列表或字典的情况
+        if isinstance(result, list):
+            # LLM 直接返回了任务列表
+            tasks = result
+        elif isinstance(result, dict):
+            # LLM 返回了包含 tasks 键的字典
+            tasks = result.get("tasks", [])
+        else:
+            print(f"⚠️ LLM 返回格式异常: {type(result)}")
+            tasks = []
+
+        task_names = []
+        for task in tasks:
+            if isinstance(task, dict):
+                tool_name = task.get("tool", "")
+                if tool_name:
+                    task_names.append(tool_name)
+            elif isinstance(task, str):
+                # 任务可能是直接的字符串
+                task_names.append(task)
 
         print(f"📋 Skill 生成的执行计划: {task_names}")
 
