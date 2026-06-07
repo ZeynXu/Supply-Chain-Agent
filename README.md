@@ -29,6 +29,8 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-04: skill加载方案实现审批工单意图下的工具调用规划；前端优化
 >
+> 2026-06-07: 审批工单场景优化：LLM分析推荐+用户确认审批
+>
 
 ---
 
@@ -114,9 +116,6 @@ Supply-Chain-Agent/
 │   ├── OtherData/                # 配置文件
 │   └── README.md                 # 数据说明
 ├── docs/                         # 项目文档
-│   ├── PROJECT_RESEARCH_REPORT.md# 项目研究报告
-│   ├── ISSUES_SUMMARY.md         # 问题修复汇总
-│   └── CODE_REVIEW_REPORT.md     # 代码审查报告
 ├── requirements.txt              # Python依赖
 └── README.md                     # 本文件
 ```
@@ -373,7 +372,7 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 | **客户统计** | query_customer_statistics | customer_id | - |
 | **工单查询** | query_work_order | work_order_id | - |
 | **创建工单** | create_work_order | work_type, description | order_id, customer_id, priority |
-| **审批工单** | approve_work_order | work_order_id, action | comment |
+| **审批工单** | approve_work_order | work_order_id | action, comment |
 | **异常上报** | report_issue | issue_type, description | order_id, urgency |
 
 ### 使用示例
@@ -435,6 +434,22 @@ Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采�
 - **位置**: `supply_chain_agent/skills/approval_workflow/`
 - **触发条件**: `intent_level_2 = "审批工单"`
 - **功能**: 指导 LLM 生成执行计划、提取参数、执行工具
+
+### 审批工单分析流程（V2.6新增）
+
+审批工单意图采用**LLM分析推荐+用户确认**模式：
+
+**工作流程**：
+1. **意图识别**：只需提供 `work_order_id`，无需提前指定审批动作
+2. **工具链执行**：依次执行 `query_work_order` → `query_order` → `query_customer_statistics`
+3. **规则参数提取**：工具间参数传递使用规则提取，无需LLM解析
+4. **LLM分析**：查询完成后，LLM结合SOP文档进行风险分析和审批建议
+5. **用户确认**：前端展示分析结果，用户决定审批动作（approve/reject/escalate）
+
+**技术特点**：
+- 规则参数提取：`_extract_params_for_next_tool()` 方法定义字段映射规则
+- LLM分析优化：精简Prompt模板（~2000字符），提取关键字段减少token消耗
+- 前端展示：显示LLM分析结果（风险等级、审批建议、置信度），而非原始查询数据
 
 ### Skill 结构
 

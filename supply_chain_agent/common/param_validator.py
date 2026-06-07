@@ -73,8 +73,8 @@ TOOL_PARAM_SPECS = {
         }
     },
     "approve_work_order": {
-        "required": ["work_order_id", "action"],
-        "optional": ["comment", "approver"],
+        "required": ["work_order_id"],  # 只需要工单号，action在用户确认审批时提供
+        "optional": ["action", "comment", "approver"],
         "types": {"work_order_id": int, "action": str, "comment": str, "approver": str},
         "valid_values": {
             "action": ["approve", "reject", "escalate"]

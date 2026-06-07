@@ -18,7 +18,7 @@ import time
 _MAX_RETRIES = 3
 _RETRY_BASE_DELAY = 1.0  # 秒
 _RETRY_MAX_DELAY = 10.0  # 秒
-_REQUEST_TIMEOUT = 60.0  # 秒
+_REQUEST_TIMEOUT = 120.0  # 秒（增加超时时间，支持复杂分析任务）
 
 
 class LLMClient(ABC):

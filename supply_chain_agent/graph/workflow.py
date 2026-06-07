@@ -209,21 +209,15 @@ class SupplyChainWorkflow:
         M16修复：从setup_nodes内部提取为类方法，便于测试和复用。
         """
         print("[进入节点: plan_task - 任务规划节点]")
-        print(f"[Workflow] self.executor: {self.executor}, self._current_emit_event: {self._current_emit_event is not None}")
 
         try:
             # Use injected executor instance
             if self.executor:
                 # 设置事件发送回调
-                print(f"[Workflow] executor 存在，检查 set_emit_event 方法...")
                 if hasattr(self.executor, 'set_emit_event'):
-                    print(f"[Workflow] 设置 executor 事件回调: {self._current_emit_event is not None}")
                     self.executor.set_emit_event(self._current_emit_event)
-                else:
-                    print(f"[Workflow] executor 没有 set_emit_event 方法!")
                 tasks = await self.executor.create_execution_plan(state.get("user_intent", {}))
             else:
-                print(f"[Workflow] executor 不存在，创建新实例")
                 from supply_chain_agent.agents.executor import ExecutorAgent
                 executor = ExecutorAgent(emit_event=self._current_emit_event)
                 tasks = await executor.create_execution_plan(state.get("user_intent", {}))
@@ -327,6 +321,19 @@ class SupplyChainWorkflow:
                     updates["execution_failed"] = True
                     updates["error_count"] = state.get("error_count", 0) + 1
                     updates["last_error"] = chain_result.get("error", "链式执行失败")
+
+                # 审批工单：查询完成后调用LLM分析
+                if intent_level_2 == "审批工单" and chain_result.get("success", False):
+                    extracted_slots = state.get("extracted_slots", {})
+                    work_order_id = extracted_slots.get("work_order_id")
+                    if work_order_id:
+                        print(f"📊 审批工单查询完成，调用LLM进行分析...")
+                        analysis_result = await executor.generate_approval_analysis(
+                            work_order_id=work_order_id,
+                            tool_results=chain_result.get("results", {})
+                        )
+                        updates["approval_analysis"] = analysis_result
+                        print(f"✅ 审批分析完成: {analysis_result.get('analysis', {}).get('summary', '')}")
 
                 context_item = {
                     "agent": "execute_task",
@@ -511,10 +518,14 @@ class SupplyChainWorkflow:
             if error_responses:
                 return self._build_error_report(error_responses, state)
 
+            # 获取审批分析结果（如果有）
+            approval_analysis = state.get("approval_analysis")
+
             report = await report_generator.generate_report(
                 state.get("user_intent", {}),
                 state.get("tool_results", {}),
-                state.get("audit_results", {})
+                state.get("audit_results", {}),
+                approval_analysis=approval_analysis
             )
 
             card = await report_generator.generate_response_card(report)
@@ -1066,6 +1077,19 @@ class SupplyChainWorkflow:
                         updates["error_count"] = state.get("error_count", 0) + 1
                         updates["last_error"] = chain_result.get("error", "链式执行失败")
 
+                    # 审批工单：查询完成后调用LLM分析
+                    if intent_level_2 == "审批工单" and chain_result.get("success", False):
+                        extracted_slots = state.get("extracted_slots", {})
+                        work_order_id = extracted_slots.get("work_order_id")
+                        if work_order_id:
+                            print(f"📊 审批工单查询完成，调用LLM进行分析...")
+                            analysis_result = await executor.generate_approval_analysis(
+                                work_order_id=work_order_id,
+                                tool_results=chain_result.get("results", {})
+                            )
+                            updates["approval_analysis"] = analysis_result
+                            print(f"✅ 审批分析完成: {analysis_result.get('analysis', {}).get('summary', '')}")
+
                     # Add to context
                     context_item = {
                         "agent": "execute_task",
@@ -1262,11 +1286,15 @@ class SupplyChainWorkflow:
                 if error_responses:
                     return self._build_error_report(error_responses, state)
 
+                # 获取审批分析结果（如果有）
+                approval_analysis = state.get("approval_analysis")
+
                 # 正常报告生成
                 report = await report_generator.generate_report(
                     state.get("user_intent", {}),
                     state.get("tool_results", {}),
-                    state.get("audit_results", {})
+                    state.get("audit_results", {}),
+                    approval_analysis=approval_analysis
                 )
 
                 card = await report_generator.generate_response_card(report)
@@ -1747,17 +1775,34 @@ class SupplyChainWorkflow:
         node_metadata = self.NODE_METADATA
         current_state = initial_state
         step_counter = 0
+        _websocket_closed = False  # 跟踪WebSocket状态
 
         async def emit(event_type: str, data: Dict[str, Any]):
+            """发送事件，处理WebSocket断开连接的情况"""
+            nonlocal _websocket_closed
+            if _websocket_closed:
+                return  # 已断开，不再发送
             if emit_event:
-                if asyncio.iscoroutinefunction(emit_event):
-                    await emit_event(event_type, data)
-                else:
-                    emit_event(event_type, data)
+                try:
+                    if asyncio.iscoroutinefunction(emit_event):
+                        await emit_event(event_type, data)
+                    else:
+                        emit_event(event_type, data)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "close" in error_str or "websocket" in error_str or "send" in error_str:
+                        print(f"⚠️ WebSocket已断开，跳过后续事件发送")
+                        _websocket_closed = True
+                    else:
+                        print(f"⚠️ 发送事件失败: {event_type}, 错误: {e}")
 
         # 使用 astream_events 获取节点开始/结束事件
         try:
             async for event in self.graph.astream_events(initial_state, config=config, version="v2"):
+                if _websocket_closed:
+                    # WebSocket已断开，继续处理但不发送事件
+                    pass
+
                 event_kind = event.get("event")
                 event_name = event.get("name")
                 event_data = event.get("data", {})
@@ -1844,16 +1889,33 @@ class SupplyChainWorkflow:
         node_metadata = self.NODE_METADATA
         step_counter = 0
         current_state = {}
+        _websocket_closed = False  # 跟踪WebSocket状态
 
         async def emit(event_type: str, data: Dict[str, Any]):
+            """发送事件，处理WebSocket断开连接的情况"""
+            nonlocal _websocket_closed
+            if _websocket_closed:
+                return  # 已断开，不再发送
             if emit_event:
-                if asyncio.iscoroutinefunction(emit_event):
-                    await emit_event(event_type, data)
-                else:
-                    emit_event(event_type, data)
+                try:
+                    if asyncio.iscoroutinefunction(emit_event):
+                        await emit_event(event_type, data)
+                    else:
+                        emit_event(event_type, data)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "close" in error_str or "websocket" in error_str or "send" in error_str:
+                        print(f"⚠️ WebSocket已断开，跳过后续事件发送")
+                        _websocket_closed = True
+                    else:
+                        print(f"⚠️ 发送事件失败: {event_type}, 错误: {e}")
 
         try:
             async for event in self.graph.astream_events(Command(resume=user_input), config=config, version="v2"):
+                if _websocket_closed:
+                    # WebSocket已断开，继续处理但不发送事件
+                    pass
+
                 event_kind = event.get("event")
                 event_name = event.get("name")
                 event_data = event.get("data", {})

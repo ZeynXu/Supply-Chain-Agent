@@ -909,7 +909,7 @@ class ParserAgent:
             "物流查询": ["order_id"],
             "产品查询": ["product_card_id"],
             "创建工单": ["work_type", "description"],
-            "审批工单": ["work_order_id", "action"],
+            "审批工单": ["work_order_id"],  # 只需要工单号，不要求action
             "上报问题": ["issue_type", "description"],
         }
 
@@ -1119,6 +1119,7 @@ class ParserAgent:
             if not query_entities:
                 issues.append("信息查询需要提供订单号、客户ID或产品ID")
         elif intent_level_2 == "审批工单":
+            # 审批工单只需要工单号，action由用户在查看分析建议后手动确认
             work_order_entities = [e for e in entities if e["type"] == "work_order_id"]
             if not work_order_entities:
                 issues.append("审批工单需要提供工单号")
@@ -1153,7 +1154,7 @@ class ParserAgent:
             "customer_id": "请问您要查询哪个客户？请输入客户ID（数字ID）",
             "product_card_id": "请问您要查询哪个产品？请输入产品卡片ID（数字ID）",
             "work_order_id": "请问您要审批哪个工单？请输入工单号",
-            "action": "请问审批动作是什么？（approve/reject/escalate）",
+            # action已移除，审批动作由用户在查看分析建议后手动确认
             "comment": "请输入审批意见",
             "work_type": "请问要创建什么类型的工单？（审批/异常处理/退款/调拨/质检/其他）",
             "description": "请描述具体内容",

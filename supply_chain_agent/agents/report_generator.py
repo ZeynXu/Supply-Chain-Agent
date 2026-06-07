@@ -24,7 +24,8 @@ class ReportGenerator:
 
     async def generate_report(self, intent: Dict[str, Any],
                              tool_results: Dict[str, Any],
-                             audit_results: Dict[str, Any]) -> Dict[str, Any]:
+                             audit_results: Dict[str, Any],
+                             approval_analysis: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Generate comprehensive report from results.
 
@@ -32,6 +33,7 @@ class ReportGenerator:
             intent: User intent
             tool_results: Tool execution results
             audit_results: Audit results
+            approval_analysis: 审批分析结果（审批工单专用）
 
         Returns:
             Structured report
@@ -52,11 +54,18 @@ class ReportGenerator:
             },
             "audit": audit_results,
             "timestamp": self._get_timestamp(),
-            "summary": self._generate_summary(intent, tool_results, audit_results)
+            "summary": self._generate_summary(intent, tool_results, audit_results, approval_analysis)
         }
 
-        # Add detailed results - use raw tool_results directly
-        report["details"] = tool_results
+        # 审批工单：不添加查询工具结果，只使用分析结果
+        intent_subtype = intent.get("intent_level_2", "")
+        if intent_subtype != "审批工单":
+            # 非审批工单，添加查询工具结果
+            report["details"] = tool_results
+
+        # 添加审批分析结果（如果有）
+        if approval_analysis:
+            report["approval_analysis"] = approval_analysis
 
         return report
 
@@ -71,11 +80,13 @@ class ReportGenerator:
             Response card structure
         """
         intent_type = report["intent"]["type"]
+        intent_subtype = report["intent"].get("subtype", "")
         summary = report.get("summary", "")
 
         card = {
             "summary": summary,
             "intent": intent_type,
+            "intent_subtype": intent_subtype,
             "timestamp": report["timestamp"],
             "confidence": report["intent"]["confidence"],
             "audit_passed": report["audit"].get("passed", False),
@@ -86,6 +97,7 @@ class ReportGenerator:
         if intent_type == "信息查询":
             card["sections"].extend(self._create_query_sections(report))
         elif intent_type == "工单管理":
+            # 审批工单：只显示分析结果，不显示查询工具结果
             card["sections"].extend(self._create_approval_sections(report))
 
         # Add actions if applicable
@@ -323,10 +335,28 @@ class ReportGenerator:
 
     def _generate_summary(self, intent: Dict[str, Any],
                          tool_results: Dict[str, Any],
-                         audit_results: Dict[str, Any]) -> str:
+                         audit_results: Dict[str, Any],
+                         approval_analysis: Dict[str, Any] = None) -> str:
         """Generate summary from results using field mapping."""
         intent_type = intent.get("intent_level_1", "查询")
         intent_subtype = intent.get("intent_level_2", "")
+
+        # 审批工单：使用分析结果的摘要
+        if intent_subtype == "审批工单" and approval_analysis:
+            analysis = approval_analysis.get("analysis", {})
+            summary = analysis.get("summary", "审批分析完成")
+
+            # 添加建议信息
+            recommendation = analysis.get("recommendation", {})
+            action = recommendation.get("action", "unknown")
+            action_map = {
+                "approve": "建议通过",
+                "reject": "建议拒绝",
+                "escalate": "建议上报"
+            }
+            action_text = action_map.get(action, "待定")
+
+            return f"📋 {summary}\n\n💡 **审批建议**: {action_text}"
 
         # Title mapping based on intent subtype
         title_map = {
@@ -401,25 +431,209 @@ class ReportGenerator:
 
     def _create_approval_sections(self, report: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Create sections for approval response card."""
-        sections = [{
-            "title": "审批准备完成",
-            "content": "已为您准备好审批表单，请确认信息后提交。"
-        }]
+        sections = []
+
+        # 检查是否有审批分析结果
+        approval_analysis = report.get("approval_analysis")
+        if approval_analysis:
+            analysis = approval_analysis.get("analysis", {})
+
+            # 1. 工单概况
+            # 兼容两种格式：简化格式和详细格式
+            work_order_analysis = analysis.get("work_order_analysis", {})
+            if work_order_analysis:
+                # 详细格式
+                content_lines = []
+                content_lines.append(f"- **工单类型**: {work_order_analysis.get('work_type', '未知')}")
+                content_lines.append(f"- **当前状态**: {work_order_analysis.get('status', '未知')}")
+                content_lines.append(f"- **优先级**: {work_order_analysis.get('priority', '未知')}")
+                content_lines.append(f"- **订单金额**: {work_order_analysis.get('order_amount', '未知')}")
+                content_lines.append(f"- **订单利润**: {work_order_analysis.get('order_profit', '未知')}")
+                content_lines.append(f"- **客户ID**: {work_order_analysis.get('customer_id', '未知')}")
+                content_lines.append(f"- **客户类型**: {work_order_analysis.get('customer_type', '未知')}")
+
+                sections.append({
+                    "title": "📋 工单概况",
+                    "content": "\n".join(content_lines)
+                })
+
+            # 2. 风险评估
+            risk_level = analysis.get("risk_level")
+            risk_assessment = analysis.get("risk_assessment", {})
+            if risk_level or risk_assessment:
+                content_lines = []
+
+                # 风险等级（支持两种格式）
+                if risk_level:
+                    risk_emoji = {"A级": "🟢", "B级": "🔵", "C级": "🟡", "D级": "🟠", "E级": "🔴"}.get(risk_level, "⚪")
+                    content_lines.append(f"- **风险等级**: {risk_emoji} {risk_level}")
+                elif risk_assessment.get("risk_level"):
+                    rl = risk_assessment.get("risk_level")
+                    risk_emoji = {"A级": "🟢", "B级": "🔵", "C级": "🟡", "D级": "🟠", "E级": "🔴"}.get(rl, "⚪")
+                    content_lines.append(f"- **风险等级**: {risk_emoji} {rl}")
+
+                # 其他风险评估字段（详细格式）
+                if risk_assessment.get("delivery_status"):
+                    content_lines.append(f"- **发货状态**: {risk_assessment.get('delivery_status')}")
+                if risk_assessment.get("quota_usage"):
+                    content_lines.append(f"- **履约额度**: {risk_assessment.get('quota_usage')}")
+
+                # 风险因素
+                risk_factors = analysis.get("risk_factors") or risk_assessment.get("risk_factors", [])
+                if risk_factors:
+                    content_lines.append("- **风险因素**:")
+                    for factor in risk_factors:
+                        content_lines.append(f"  - {factor}")
+
+                if content_lines:
+                    sections.append({
+                        "title": "⚠️ 风险评估",
+                        "content": "\n".join(content_lines)
+                    })
+
+            # 3. 审批层级（简化格式）或合规检查（详细格式）
+            approval_level = analysis.get("approval_level")
+            compliance_check = analysis.get("compliance_check", {})
+            if approval_level or compliance_check:
+                content_lines = []
+
+                if approval_level:
+                    # 简化格式
+                    content_lines.append(f"- **审批层级**: {approval_level}")
+                elif compliance_check.get("approval_level"):
+                    content_lines.append(f"- **审批层级**: {compliance_check.get('approval_level')}")
+
+                # 详细格式的其他字段
+                if compliance_check:
+                    materials_complete = compliance_check.get("materials_complete")
+                    if materials_complete is not None:
+                        complete_status = "✅ 齐全" if materials_complete else "❌ 不完整"
+                        content_lines.append(f"- **材料状态**: {complete_status}")
+
+                    missing_materials = compliance_check.get("missing_materials", [])
+                    if missing_materials:
+                        content_lines.append("- **缺失材料**:")
+                        for m in missing_materials:
+                            content_lines.append(f"  - {m}")
+
+                    special_conditions = compliance_check.get("special_conditions", [])
+                    if special_conditions:
+                        content_lines.append("- **特殊条件**:")
+                        for c in special_conditions:
+                            content_lines.append(f"  - {c}")
+
+                if content_lines:
+                    sections.append({
+                        "title": "📑 审批要求",
+                        "content": "\n".join(content_lines)
+                    })
+
+            # 4. 审批建议
+            recommendation = analysis.get("recommendation", {})
+            if recommendation:
+                action = recommendation.get("action", "unknown")
+                action_map = {
+                    "approve": ("通过", "✅"),
+                    "reject": ("拒绝", "❌"),
+                    "escalate": ("上报", "⬆️")
+                }
+                action_text, action_emoji = action_map.get(action, ("待定", "❓"))
+
+                content_lines = []
+                content_lines.append(f"- **建议操作**: {action_emoji} {action_text}")
+                content_lines.append(f"- **建议理由**: {recommendation.get('reason', '无')}")
+
+                risk_warnings = recommendation.get("risk_warnings", [])
+                if risk_warnings:
+                    content_lines.append("- **风险提示**:")
+                    for w in risk_warnings:
+                        content_lines.append(f"  - ⚠️ {w}")
+
+                additional_actions = recommendation.get("additional_actions", [])
+                if additional_actions:
+                    content_lines.append("- **建议措施**:")
+                    for a in additional_actions:
+                        content_lines.append(f"  - {a}")
+
+                sections.append({
+                    "title": "💡 审批建议",
+                    "content": "\n".join(content_lines)
+                })
+
+            # 添加置信度信息
+            confidence = analysis.get("confidence", 0)
+            if confidence:
+                sections.append({
+                    "title": "📊 分析置信度",
+                    "content": f"本次分析置信度: **{confidence * 100:.1f}%**"
+                })
+
+        else:
+            # 没有分析结果时的默认展示
+            sections.append({
+                "title": "审批准备完成",
+                "content": "已为您准备好审批表单，请确认信息后提交。"
+            })
+
         return sections
 
     def _create_actions(self, report: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Create action buttons for response card."""
         intent_type = report["intent"]["type"]
+        intent_subtype = report["intent"].get("subtype", "")
 
-        if intent_type == "工单管理":
-            return [{
-                "label": "确认提交审批",
-                "description": "提交工单审批申请",
-                "action": "confirm_approval"
-            }, {
-                "label": "修改审批意见",
-                "description": "修改审批意见后重新提交",
+        if intent_type == "工单管理" and intent_subtype == "审批工单":
+            # 获取审批建议
+            approval_analysis = report.get("approval_analysis", {})
+            analysis = approval_analysis.get("analysis", {})
+            recommendation = analysis.get("recommendation", {})
+            suggested_action = recommendation.get("action", "unknown")
+
+            # 根据建议的action提供对应的确认按钮
+            actions = []
+
+            if suggested_action == "approve":
+                actions.append({
+                    "label": "✅ 确认通过",
+                    "description": "按照建议通过审批",
+                    "action": "confirm_approve"
+                })
+            elif suggested_action == "reject":
+                actions.append({
+                    "label": "❌ 确认拒绝",
+                    "description": "按照建议拒绝审批",
+                    "action": "confirm_reject"
+                })
+            elif suggested_action == "escalate":
+                actions.append({
+                    "label": "⬆️ 上报审批",
+                    "description": "上报给上级审批人",
+                    "action": "confirm_escalate"
+                })
+
+            # 始终提供其他选项
+            actions.append({
+                "label": "🔄 选择其他操作",
+                "description": "选择不同的审批操作",
+                "action": "choose_other_action"
+            })
+            actions.append({
+                "label": "📝 修改审批意见",
+                "description": "添加或修改审批意见",
                 "action": "edit_comment"
+            })
+
+            return actions
+
+        elif intent_type == "工单管理":
+            return [{
+                "label": "确认提交",
+                "description": "提交工单申请",
+                "action": "confirm_submission"
+            }, {
+                "label": "修改内容",
+                "description": "修改工单内容后重新提交",
+                "action": "edit_content"
             }]
 
         elif intent_type == "信息查询":

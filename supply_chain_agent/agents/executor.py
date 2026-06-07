@@ -169,8 +169,8 @@ class ExecutorAgent:
             "optional": ["priority", "order_id", "assigned_to"]
         },
         "approve_work_order": {
-            "required": ["work_order_id", "action"],
-            "optional": ["comment", "approver"]
+            "required": ["work_order_id"],  # 只需要工单号，action在用户确认审批时提供
+            "optional": ["action", "comment", "approver"]
         },
         "report_issue": {
             "required": ["issue_type", "description"],
@@ -230,16 +230,16 @@ class ExecutorAgent:
         self._emit_event = emit_event
 
     async def _emit(self, event_type: str, data: Dict[str, Any]):
-        """发送事件的辅助方法"""
-        print(f"[Executor] 发送事件: {event_type}, data: {data}")
+        """发送事件的辅助方法，处理WebSocket断开连接"""
         if self._emit_event:
             try:
                 await self._emit_event(event_type, data)
-                print(f"[Executor] 事件发送成功: {event_type}")
             except Exception as e:
-                print(f"⚠️ 发送事件失败: {e}")
-        else:
-            print(f"⚠️ _emit_event 未设置，无法发送事件")
+                error_str = str(e).lower()
+                if "close" in error_str or "websocket" in error_str or "send" in error_str:
+                    print(f"⚠️ WebSocket已断开，跳过事件发送: {event_type}")
+                else:
+                    print(f"⚠️ 发送事件失败: {e}")
 
     def _load_agent_md(self) -> str:
         """加载AGENT.md文件内容"""
@@ -312,12 +312,232 @@ class ExecutorAgent:
             return self._get_default_approval_plan()
 
     def _get_default_approval_plan(self) -> List[str]:
-        """获取默认的审批工单执行计划"""
+        """获取默认的审批工单执行计划（仅查询工具，不包含审批操作）"""
         return [
             "query_work_order",
             "query_order",
             "query_customer_statistics"
         ]
+
+    async def generate_approval_analysis(
+        self,
+        work_order_id: str,
+        tool_results: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        生成审批分析报告。
+
+        在所有查询工具执行完毕后，调用LLM分析查询结果和SOP文档，
+        给出审批建议。
+
+        Args:
+            work_order_id: 工单ID
+            tool_results: 查询工具执行结果，包含:
+                - query_work_order: 工单查询结果
+                - query_order: 订单查询结果
+                - query_customer_statistics: 客户统计信息
+
+        Returns:
+            分析结果字典，包含:
+            - summary: 概况摘要
+            - work_order_analysis: 工单分析
+            - risk_assessment: 风险评估
+            - compliance_check: 合规检查
+            - recommendation: 审批建议
+            - confidence: 置信度
+        """
+        if not LLM_CLIENT_AVAILABLE:
+            print("⚠️ LLM客户端不可用，无法生成审批分析")
+            return self._get_fallback_analysis(work_order_id, tool_results)
+
+        # 加载SOP文档（精简版）
+        sop_customer_classification = self._load_sop_document(
+            "Customer Classification and Performance Quota Management Measures.md"
+        )
+        sop_approval_management = self._load_sop_document(
+            "Supply Chain Business Approval Management Measures.md"
+        )
+
+        # 获取查询结果（精简关键字段）
+        work_order_result = self._extract_key_fields(
+            tool_results.get("query_work_order", {}),
+            ["work_order_id", "work_type", "status", "priority", "order_id", "customer_id", "description", "created_at"]
+        )
+        order_result = self._extract_key_fields(
+            tool_results.get("query_order", {}),
+            ["order_id", "order_status", "order_amount", "order_profit", "customer_id", "shipping_mode", "delivery_status"]
+        )
+        customer_statistics_result = self._extract_key_fields(
+            tool_results.get("query_customer_statistics", {}),
+            ["customer_id", "customer_segment", "total_orders", "total_sales", "late_delivery_rate", "shipping_canceled_rate"]
+        )
+
+        # 导入Prompt模板
+        from supply_chain_agent.prompts.execution_plan import APPROVAL_ANALYSIS_PROMPT
+
+        # 构建Prompt
+        prompt = APPROVAL_ANALYSIS_PROMPT.format(
+            work_order_id=work_order_id,
+            work_order_result=json.dumps(work_order_result, ensure_ascii=False, indent=2, default=str),
+            order_result=json.dumps(order_result, ensure_ascii=False, indent=2, default=str),
+            customer_statistics_result=json.dumps(customer_statistics_result, ensure_ascii=False, indent=2, default=str),
+            sop_customer_classification=sop_customer_classification,
+            sop_approval_management=sop_approval_management
+        )
+
+        try:
+            llm_client = ServiceContainer.get_llm_client()
+            result = await llm_client.generate_json(prompt)
+
+            # 记录分析结果
+            print(f"📊 审批分析完成: {result.get('summary', '无摘要')}")
+            print(f"   建议: {result.get('recommendation', {}).get('action', 'unknown')}")
+
+            return {
+                "success": True,
+                "analysis": result,
+                "work_order_id": work_order_id
+            }
+
+        except Exception as e:
+            print(f"⚠️ LLM审批分析失败: {e}")
+            return self._get_fallback_analysis(work_order_id, tool_results, str(e))
+
+    def _extract_key_fields(self, data: Dict[str, Any], key_fields: List[str]) -> Dict[str, Any]:
+        """
+        从数据中提取关键字段（精简数据）。
+
+        Args:
+            data: 原始数据
+            key_fields: 关键字段列表
+
+        Returns:
+            只包含关键字段的精简数据
+        """
+        if not isinstance(data, dict):
+            return data
+
+        result = {}
+        for field in key_fields:
+            if field in data:
+                result[field] = data[field]
+
+        # 如果提取结果为空，返回原始数据的前10个字段
+        if not result:
+            return dict(list(data.items())[:10])
+
+        return result
+
+    def _load_sop_document(self, filename: str) -> str:
+        """
+        加载SOP文档内容（精简版，只提取关键规则）。
+
+        Args:
+            filename: 文档文件名
+
+        Returns:
+            文档关键内容字符串
+        """
+        sop_path = Path(__file__).parent.parent.parent / "dataset" / "SOPData" / filename
+
+        try:
+            if not sop_path.exists():
+                print(f"⚠️ SOP文档不存在: {sop_path}")
+                return f"[文档 {filename} 未找到]"
+
+            full_content = sop_path.read_text(encoding="utf-8")
+
+            # 精简文档：只提取关键规则部分
+            return self._extract_sop_key_rules(full_content, filename)
+
+        except Exception as e:
+            print(f"⚠️ 加载SOP文档失败: {e}")
+            return f"[加载文档 {filename} 失败]"
+
+    def _extract_sop_key_rules(self, content: str, filename: str) -> str:
+        """
+        从SOP文档中提取关键规则（精简版）。
+
+        Args:
+            content: 完整文档内容
+            filename: 文件名（用于判断提取策略）
+
+        Returns:
+            精简后的关键规则文本
+        """
+        lines = content.split('\n')
+        key_rules = []
+        in_key_section = False
+
+        # 根据文件名确定要提取的关键章节
+        if "Customer Classification" in filename:
+            # 客商分级：提取分级标准和履约额度表
+            key_sections = ["三、客商风险分级标准", "四、分级客商履约额度"]
+        elif "Approval Management" in filename:
+            # 审批管理：提取审批权限划分
+            key_sections = ["三、审批权限划分", "四、审批所需材料"]
+        else:
+            # 默认提取前500字符
+            return content[:500] + "...(已精简)"
+
+        for line in lines:
+            # 检查是否进入关键章节
+            for section in key_sections:
+                if section in line:
+                    in_key_section = True
+                    break
+
+            # 检查是否离开关键章节（遇到下一个章节标题）
+            if in_key_section and line.startswith("## ") and not any(s in line for s in key_sections):
+                in_key_section = False
+
+            if in_key_section:
+                key_rules.append(line)
+
+        result = '\n'.join(key_rules)
+
+        # 如果提取结果为空或太短，返回前800字符
+        if len(result) < 100:
+            return content[:800] + "...(已精简)"
+
+        return result
+
+    def _get_fallback_analysis(
+        self,
+        work_order_id: str,
+        tool_results: Dict[str, Any],
+        error: str = None
+    ) -> Dict[str, Any]:
+        """
+        生成降级分析结果（当LLM不可用时）。
+
+        Args:
+            work_order_id: 工单ID
+            tool_results: 查询结果
+            error: 错误信息
+
+        Returns:
+            降级分析结果（精简格式）
+        """
+        work_order_result = tool_results.get("query_work_order", {})
+        order_result = tool_results.get("query_order", {})
+
+        return {
+            "success": False,
+            "analysis": {
+                "summary": f"工单 {work_order_id} 查询完成，请人工审核",
+                "risk_level": "C级",
+                "risk_factors": ["LLM分析不可用，建议人工评估"],
+                "approval_level": "请人工判断",
+                "recommendation": {
+                    "action": "escalate",
+                    "reason": error or "LLM分析服务不可用，建议人工审核"
+                },
+                "confidence": 0.0
+            },
+            "work_order_id": work_order_id,
+            "error": error
+        }
 
     def _get_llm_client_for_skill(self):
         """获取用于 skill 的 LLM 客户端"""
@@ -616,6 +836,7 @@ class ExecutorAgent:
             return "create_work_order", params
 
         if tool_name == "approve_work_order":
+            # action可选，默认为approve
             action = extracted_slots.get("action", "approve")
             if action not in VALID_APPROVE_ACTIONS:
                 action = "approve"
@@ -917,15 +1138,13 @@ class ExecutorAgent:
         intent: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        执行工具计划，每一步都将结果发送给LLM解析获取下一步工具的入参。
+        执行工具计划，每一步使用规则提取从结果中获取下一步工具的入参。
 
         流程：
-        1. 开始执行前，可选启动一个独立的LLM调用获取初始参数（如有则不改动）
-        2. 依次执行每个工具
-        3. 每执行完一个工具，将执行结果发送给LLM解析
-        4. LLM输出下一步工具执行的入参
-        5. 结合入参和当前待执行工具，继续工具执行
-        6. 直至执行计划的所有工具执行完毕，或抛出异常退出
+        1. 依次执行每个工具
+        2. 每执行完一个工具，使用规则从结果中提取下一步工具所需参数
+        3. 结合入参和当前待执行工具，继续工具执行
+        4. 直至执行计划的所有工具执行完毕，或抛出异常退出
 
         Args:
             execution_plan: 工具名称列表，如 ['query_work_order', 'query_order', 'query_customer_statistics']
@@ -961,9 +1180,6 @@ class ExecutorAgent:
                 execution_context["current_step"] = step_index + 1
                 print(f"\n🔧 [步骤 {step_index + 1}/{len(execution_plan)}] 执行工具: {tool_name}")
 
-                # 如果是第一步且需要LLM生成初始参数，可以在这里调用
-                # 但用户说"如有则不改动"，所以保持现有逻辑
-
                 # 使用当前槽位构建参数并执行工具
                 tool_result = await self._execute_single_tool_with_slots(
                     tool_name,
@@ -990,26 +1206,25 @@ class ExecutorAgent:
 
                 print(f"✅ 工具 {tool_name} 执行成功")
 
-                # 如果还有下一个工具，将当前结果发送给LLM解析获取下一步入参
+                # 如果还有下一个工具，使用规则从当前结果中提取下一步入参
                 if step_index < len(execution_plan) - 1:
                     next_tool_name = execution_plan[step_index + 1]
-                    print(f"📤 将执行结果发送给LLM，解析下一步工具 {next_tool_name} 的入参...")
+                    print(f"📤 从结果中提取下一步工具 {next_tool_name} 的入参...")
 
-                    # 调用LLM解析结果并生成下一步参数
-                    llm_params = await self._llm_parse_for_next_tool_params(
+                    # 使用规则提取参数
+                    extracted_params = self._extract_params_for_next_tool(
                         current_tool=tool_name,
                         current_result=tool_result,
                         next_tool=next_tool_name,
-                        current_slots=current_slots,
-                        execution_context=execution_context
+                        current_slots=current_slots
                     )
 
-                    if llm_params:
-                        # 更新槽位，合并LLM生成的参数
-                        current_slots.update(llm_params)
-                        print(f"📥 LLM返回的参数: {llm_params}")
+                    if extracted_params:
+                        # 更新槽位，合并提取的参数
+                        current_slots.update(extracted_params)
+                        print(f"📥 提取到的参数: {extracted_params}")
                     else:
-                        print(f"⚠️ LLM未返回有效参数，继续使用当前槽位")
+                        print(f"⚠️ 未能提取到有效参数，继续使用当前槽位")
 
             # 所有工具执行完毕
             print(f"\n🎉 执行计划完成，共执行 {len(execution_plan)} 个工具")
@@ -1028,6 +1243,78 @@ class ExecutorAgent:
                 "error": f"执行计划异常: {str(e)}",
                 "execution_context": execution_context
             }
+
+    def _extract_params_for_next_tool(
+        self,
+        current_tool: str,
+        current_result: Dict[str, Any],
+        next_tool: str,
+        current_slots: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        使用规则从当前工具执行结果中提取下一个工具的参数。
+
+        Args:
+            current_tool: 当前执行的工具名称
+            current_result: 当前工具的执行结果
+            next_tool: 下一个要执行的工具名称
+            current_slots: 当前槽位信息
+
+        Returns:
+            提取到的参数字典，或None如果无法提取
+        """
+        # 参数提取规则映射表：(当前工具, 下一步工具) -> 提取规则
+        EXTRACTION_RULES = {
+            # query_work_order -> query_order: 从工单中提取order_id
+            ("query_work_order", "query_order"): {
+                "source_fields": ["order_id"],
+                "target_params": ["order_id"]
+            },
+            # query_work_order -> query_customer_statistics: 从工单中提取customer_id
+            ("query_work_order", "query_customer_statistics"): {
+                "source_fields": ["customer_id"],
+                "target_params": ["customer_id"]
+            },
+            # query_order -> query_customer_statistics: 从订单中提取customer_id
+            ("query_order", "query_customer_statistics"): {
+                "source_fields": ["customer_id", "customer_id"],
+                "target_params": ["customer_id"]
+            },
+        }
+
+        # 获取提取规则
+        rule_key = (current_tool, next_tool)
+        rule = EXTRACTION_RULES.get(rule_key)
+
+        if not rule:
+            print(f"⚠️ 未找到从 {current_tool} 到 {next_tool} 的参数提取规则")
+            return None
+
+        extracted = {}
+        source_fields = rule.get("source_fields", [])
+        target_params = rule.get("target_params", [])
+
+        # 从结果中提取参数
+        for source_field, target_param in zip(source_fields, target_params):
+            # 首先尝试从结果中获取
+            value = current_result.get(source_field)
+
+            # 如果结果中没有，尝试从嵌套结构中获取
+            if value is None and isinstance(current_result, dict):
+                # 尝试从data字段中获取
+                data = current_result.get("data", {})
+                if isinstance(data, dict):
+                    value = data.get(source_field)
+
+            # 如果仍然没有，从当前槽位中获取
+            if value is None:
+                value = current_slots.get(source_field)
+
+            if value is not None:
+                extracted[target_param] = value
+                print(f"   提取: {source_field} -> {target_param} = {value}")
+
+        return extracted if extracted else None
 
     async def _execute_single_tool_with_slots(
         self,

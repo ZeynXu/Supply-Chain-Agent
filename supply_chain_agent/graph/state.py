@@ -112,6 +112,7 @@ class AgentState(TypedDict):
     - error: 错误处理
     - output: 输出结果
     - clarification: 澄清处理
+    - approval: 审批分析
     """
     # Conversation history
     messages: Annotated[List[Dict[str, str]], operator.add]
@@ -160,6 +161,9 @@ class AgentState(TypedDict):
 
     # Max clarification loops reached flag
     max_clarification_reached: bool
+
+    # Approval analysis result (审批工单专用)
+    approval_analysis: Optional[Dict[str, Any]]
 
 
 class StateManager:
@@ -221,7 +225,9 @@ class StateManager:
             "clarification_prompt": None,
             "clarification_received": False,
             "clarification_loop_count": 0,
-            "max_clarification_reached": False
+            "max_clarification_reached": False,
+            # Approval analysis
+            "approval_analysis": None
         }
 
     def update_state_intent(self, state: AgentState, intent: Dict[str, Any]) -> AgentState:
@@ -284,6 +290,11 @@ class StateManager:
         state["response_card"] = card
         return state
 
+    def update_approval_analysis(self, state: AgentState, analysis: Dict[str, Any]) -> AgentState:
+        """Update approval analysis in state."""
+        state["approval_analysis"] = analysis
+        return state
+
     def get_state_summary(self, state: AgentState) -> Dict[str, Any]:
         """Get a summary of the current state."""
         return {
@@ -296,7 +307,8 @@ class StateManager:
             "audit_passed": state["audit_results"].get("passed", False),
             "error_count": state["error_count"],
             "has_final_report": state["final_report"] is not None,
-            "has_response_card": state["response_card"] is not None
+            "has_response_card": state["response_card"] is not None,
+            "has_approval_analysis": state.get("approval_analysis") is not None
         }
 
     def is_ready_for_execution(self, state: AgentState) -> bool:
