@@ -1,9 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.5
-**生成日期**: 2026年6月4日
+**文档版本**: V2.7
+**生成日期**: 2026年6月7日
 **研究范围**: 完整项目代码与文档分析
-**更新说明**: 基于代码实际实现进行全面更新，反映最新架构优化；新增Skill系统、LLM快速生成模式、实时进度显示功能  
+**更新说明**: V2.7新增Harness Engineering工程化能力（三层增强模型：配置化约束层、验证与可观测层、反馈与持续改进层）  
 
 ---
 
@@ -22,7 +22,8 @@
 11. [性能指标分析](#11-性能指标分析)
 12. [项目特色与创新点](#12-项目特色与创新点)
 13. [代码质量分析](#13-代码质量分析)
-14. [未来扩展建议](#14-未来扩展建议)
+14. [Harness Engineering 工程化能力](#14-harness-engineering-工程化能力-v27新增)
+15. [未来扩展建议](#15-未来扩展建议)
 
 ---
 
@@ -94,6 +95,36 @@ Supply_Chain_Agent/
 │   │   └── combined.py           # 组合Prompt
 │   ├── monitoring/               # 监控系统
 │   │   └── stability_monitor.py  # 稳定性监控
+│   ├── harness/                  # Harness Engineering工程化模块 (V2.7新增)
+│   │   ├── __init__.py           # 模块初始化
+│   │   ├── config.py             # Harness配置管理
+│   │   ├── decorators.py         # 参数预检装饰器
+│   │   ├── rules/                # Layer 1: 业务规则
+│   │   │   ├── __init__.py
+│   │   │   ├── loader.py         # YAML规则加载器
+│   │   │   ├── evaluator.py      # 规则评估引擎
+│   │   │   └── business_rules.yaml # 业务规则配置
+│   │   ├── observability/        # Layer 2: 可观测性
+│   │   │   ├── __init__.py
+│   │   │   ├── metrics.py        # Prometheus指标
+│   │   │   ├── logging_config.py # 结构化日志
+│   │   │   ├── trace.py          # Trace收集器
+│   │   │   └── trace_cli.py      # Trace查询工具
+│   │   ├── evals/                # Layer 2: Evals评估
+│   │   │   ├── __init__.py
+│   │   │   ├── base.py           # 基础评估器
+│   │   │   ├── intent_eval.py    # 意图评估器
+│   │   │   ├── tool_eval.py      # 工具评估器
+│   │   │   ├── audit_eval.py     # 审计评估器
+│   │   │   └── e2e_eval.py       # 端到端评估器
+│   │   ├── feedback/             # Layer 3: 反馈改进
+│   │   │   ├── __init__.py
+│   │   │   ├── cluster_errors.py # 错误聚类脚本
+│   │   │   └── weekly_report.py  # 周度报告生成
+│   │   ├── spec/                 # SPEC规范文件
+│   │   │   ├── intent_schema.json
+│   │   │   └── tool_params_schema.json
+│   │   └── playbook.md           # Harness运维手册
 │   ├── utils/                    # 工具函数
 │   │   └── field_mapping.py      # 字段映射
 │   ├── frontend/                 # React前端
@@ -421,7 +452,8 @@ VALID_URGENCIES = ["高", "中", "低"]
 VALID_APPROVE_ACTIONS = ["approve", "reject", "escalate"]
 ```
 
-**链式执行模式**：
+**工具编排类方法**：
+
 ```python
 async def execute_plan_with_llm_feedback(
     self,
@@ -430,14 +462,58 @@ async def execute_plan_with_llm_feedback(
     intent: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    执行工具计划，每一步都将结果发送给LLM解析获取下一步工具的入参。
+    执行工具计划，每一步使用规则提取从结果中获取下一步工具的入参。
     
     流程：
     1. 依次执行每个工具
-    2. 每执行完一个工具，将执行结果发送给LLM解析
-    3. LLM输出下一步工具执行的入参
-    4. 直至执行计划的所有工具执行完毕
+    2. 每执行完一个工具，使用规则从结果中提取下一步工具所需参数
+    3. 结合入参和当前待执行工具，继续工具执行
+    4. 直至执行计划的所有工具执行完毕，或抛出异常退出
     """
+
+def _extract_params_for_next_tool(
+    self,
+    current_tool: str,
+    current_result: Dict[str, Any],
+    next_tool: str,
+    current_slots: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    使用规则从当前工具执行结果中提取下一个工具的参数（V2.6新增）
+    
+    参数提取规则映射表：
+    - (query_work_order, query_order): order_id -> order_id
+    - (query_work_order, query_customer_statistics): customer_id -> customer_id
+    - (query_order, query_customer_statistics): customer_id -> customer_id
+    """
+```
+
+**审批分析类方法（V2.6新增）**：
+
+```python
+async def generate_approval_analysis(
+    self,
+    work_order_id: str,
+    tool_results: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    生成审批分析报告
+    
+    在所有查询工具执行完毕后，调用LLM分析查询结果和SOP文档，
+    给出审批建议（风险等级、审批层级、建议操作等）。
+    """
+
+def _extract_key_fields(self, data: Dict, key_fields: List[str]) -> Dict:
+    """从数据中提取关键字段（精简数据，减少token消耗）"""
+
+def _load_sop_document(self, filename: str) -> str:
+    """加载SOP文档内容（精简版）"""
+
+def _extract_sop_key_rules(self, content: str, filename: str) -> str:
+    """从SOP文档中提取关键规则"""
+
+def _get_fallback_analysis(self, work_order_id: str, tool_results: Dict, error: str) -> Dict:
+    """生成降级分析结果（当LLM不可用时）"""
 ```
 
 ### 3.4 AuditorAgent（审计员Agent）
@@ -920,6 +996,123 @@ Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采�
 - **触发条件**: `intent_level_2 = "审批工单"`
 - **功能**: 指导 LLM 生成执行计划、提取参数、执行工具
 
+### 审批工单分析流程（V2.6新增）
+
+审批工单意图采用**LLM分析推荐+用户确认**模式，实现智能化审批辅助决策：
+
+**工作流程**：
+1. **意图识别**：只需提供 `work_order_id`，无需提前指定审批动作
+2. **工具链执行**：依次执行 `query_work_order` → `query_order` → `query_customer_statistics`
+3. **规则参数提取**：工具间参数传递使用规则提取，无需LLM解析
+4. **LLM分析**：查询完成后，LLM结合SOP文档进行风险分析和审批建议
+5. **用户确认**：前端展示分析结果，用户决定审批动作（approve/reject/escalate）
+
+**技术实现**：
+
+```python
+# executor.py 新增方法
+async def generate_approval_analysis(
+    self,
+    work_order_id: str,
+    tool_results: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    生成审批分析报告
+    
+    流程：
+    1. 加载SOP文档（精简版）
+    2. 提取查询结果关键字段
+    3. 调用LLM分析风险和审批建议
+    4. 返回结构化分析结果
+    """
+
+def _extract_params_for_next_tool(
+    self,
+    current_tool: str,
+    current_result: Dict[str, Any],
+    next_tool: str,
+    current_slots: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """
+    使用规则从当前工具执行结果中提取下一个工具的参数
+    
+    参数提取规则映射表：
+    - (query_work_order, query_order): order_id -> order_id
+    - (query_work_order, query_customer_statistics): customer_id -> customer_id
+    - (query_order, query_customer_statistics): customer_id -> customer_id
+    """
+```
+
+**技术特点**：
+- **规则参数提取**：`_extract_params_for_next_tool()` 方法定义字段映射规则，替代LLM解析，降低token消耗
+- **LLM分析优化**：精简Prompt模板（~2000字符），提取关键字段减少token消耗
+- **SOP文档精简**：`_extract_sop_key_rules()` 只提取关键规则章节
+- **前端展示**：显示LLM分析结果（风险等级、审批建议、置信度），而非原始查询数据
+
+**审批分析Prompt模板**：
+
+```python
+APPROVAL_ANALYSIS_PROMPT = """你是供应链审批专家。根据查询结果和规则，给出审批建议。
+
+## 工单: {work_order_id}
+## 查询结果
+**工单**: {work_order_result}
+**订单**: {order_result}
+**客户**: {customer_statistics_result}
+
+## 审批规则
+### 客商风险等级
+- A级(优质): 企业客户，履约良好，额度>50000
+- B级(良好): 企业客户，偶有延迟，额度20000-50000
+...
+
+## 输出要求
+输出JSON: {summary, risk_level, risk_factors, approval_level, recommendation, confidence}
+"""
+```
+
+**状态管理更新**：
+
+```python
+class AgentState(TypedDict):
+    # ... 其他字段
+    approval_analysis: Optional[Dict[str, Any]]  # V2.6新增：审批分析结果
+```
+
+**报告生成优化**：
+
+```python
+# report_generator.py
+async def generate_report(
+    self,
+    intent: Dict[str, Any],
+    tool_results: Dict[str, Any],
+    audit_results: Dict[str, Any],
+    approval_analysis: Dict[str, Any] = None  # V2.6新增
+) -> Dict[str, Any]:
+    """
+    审批工单：不添加查询工具结果，只使用分析结果
+    """
+```
+
+**前端展示内容**：
+
+| 展示区块 | 内容 |
+|---------|------|
+| 📋 工单概况 | 工单类型、状态、优先级、订单金额、客户信息 |
+| ⚠️ 风险评估 | 风险等级（A/B/C/D/E级）、风险因素 |
+| 📑 审批要求 | 审批层级、材料状态、特殊条件 |
+| 💡 审批建议 | 建议操作（通过/拒绝/上报）、理由、风险提示 |
+| 📊 分析置信度 | LLM分析置信度百分比 |
+
+**用户操作按钮**：
+
+根据LLM建议动态生成确认按钮：
+- 建议通过 → "✅ 确认通过"
+- 建议拒绝 → "❌ 确认拒绝"
+- 建议上报 → "⬆️ 上报审批"
+- 始终提供 → "🔄 选择其他操作"、"📝 修改审批意见"
+
 ### Skill 结构
 
 ```
@@ -1279,14 +1472,21 @@ class Settings(BaseSettings):
    - 快速生成模式优化（关闭 thinking，限制 max_tokens）
    - Skill 加载从 ~35秒 优化至 ~5秒
 
-3. **实时进度显示**:
+3. **审批工单LLM分析推荐模式（V2.6新增）**:
+   - 用户只需提供工单号，无需提前指定审批动作
+   - 工具链执行后，LLM结合SOP文档进行风险分析和审批建议
+   - 规则参数提取替代LLM解析，降低token消耗
+   - 前端展示分析结果（风险等级、审批建议），用户确认后执行
+   - 实现智能化审批辅助决策
+
+4. **实时进度显示**:
    - 使用 LangGraph `astream_events` API
    - 节点进入时立即显示，而非完成后显示
    - PendingSkills 机制处理事件顺序问题
 
-4. **熔断器模式**: 工具调用熔断保护，防止故障扩散
-5. **知识库降级**: 工具不可用时，知识库检索+LLM生成友好提示，**不返回假数据**
-6. **审批二次确认**: 危险操作（审批）必须用户二次确认
+5. **熔断器模式**: 工具调用熔断保护，防止故障扩散
+6. **知识库降级**: 工具不可用时，知识库检索+LLM生成友好提示，**不返回假数据**
+7. **审批二次确认**: 危险操作（审批）必须用户二次确认，V2.6新增LLM分析推荐+用户确认模式
 
 ### 12.3 工程实践
 
@@ -1310,10 +1510,10 @@ class Settings(BaseSettings):
 | 模块 | 文件 | 代码行数 | 说明 |
 |------|------|----------|------|
 | Orchestrator | orchestrator.py | ~650 | 总控Agent |
-| Parser | parser.py | ~830 | 解析师Agent |
-| Executor | executor.py | ~1087 | 调度员Agent |
+| Parser | parser.py | ~835 | 解析师Agent |
+| Executor | executor.py | ~1200 | 调度员Agent（V2.6新增审批分析功能） |
 | Auditor | auditor.py | ~334 | 审计员Agent |
-| Workflow | workflow.py | ~949 | LangGraph工作流 |
+| Workflow | workflow.py | ~1050 | LangGraph工作流（V2.6新增审批分析调用） |
 | Memory | vector_store.py | ~666 | 记忆系统 |
 | App | app.py | ~1077 | FastAPI应用 |
 | Database | supply_chain_db.py | ~1426 | 数据库操作 |
@@ -1321,36 +1521,282 @@ class Settings(BaseSettings):
 | MCP Client | client.py | ~490 | 工具客户端 |
 | BERT NER | bert_ner.py | ~330 | NER模块 |
 | Config | config.py | ~148 | 配置管理 |
-| State | state.py | ~223 | 状态定义 |
-| Report Generator | report_generator.py | ~475 | 报告生成器 |
+| State | state.py | ~240 | 状态定义（V2.6新增approval_analysis字段） |
+| Report Generator | report_generator.py | ~550 | 报告生成器（V2.6新增审批分析展示） |
 | LLM Client | llm_client.py | ~575 | LLM客户端（含快速生成模式）|
+| Prompts | execution_plan.py | ~180 | Prompt模板（V2.6新增审批分析模板） |
 
-**总计**: 约 ~8000 行核心代码
+**总计**: 约 ~8500 行核心代码
 
 ---
 
-## 14. 未来扩展建议
+## 14. Harness Engineering 工程化能力 (V2.7新增)
 
-### 14.1 功能扩展
+### 14.1 设计理念
+
+基于"**Human Steer, Agents Execute**"（人类掌舵，智能体执行）的哲学，Harness Engineering为系统提供三层工程化增强：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│          Layer 3: 反馈与持续改进层（Feedback & Iteration）    │
+│    • 错误聚类报告（半自动）                                   │
+│    • 周度分析流程                                             │
+│    • Harness Playbook                                        │
+├─────────────────────────────────────────────────────────────┤
+│          Layer 2: 验证与可观测层（Verification & Observability）│
+│    • 结构化日志（JSON）                                      │
+│    • Prometheus Metrics                                     │
+│    • 按需Trace（采样+错误全记录）                             │
+│    • 核心场景Evals（Level 1/2/3）                           │
+├─────────────────────────────────────────────────────────────┤
+│          Layer 1: 配置化约束层（Configurable Constraints）    │
+│    • 业务规则配置（扩展Auditor）                              │
+│    • 参数预检装饰器（可选）                                    │
+│    • AGENTS.md + SPEC规范文件                                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**核心原则**：增强而非替换，配置化而非框架化，可选而非强制
+
+### 14.2 Layer 1: 配置化约束层
+
+#### 14.2.1 业务规则YAML配置
+
+**文件位置**: `supply_chain_agent/harness/rules/business_rules.yaml`
+
+支持从YAML文件加载业务审计规则，实现热加载：
+
+```yaml
+rules:
+  - id: "high_value_approval"
+    name: "大额审批需升级"
+    enabled: true
+    severity: "block"
+    condition: "work_order.get('amount', 0) > 500000 and work_order.get('type') == '审批'"
+    action: "require_approval_level: director"
+    message: "订单金额超过50万，需要总监级审批"
+```
+
+**安全表达式评估器**:
+
+使用AST解析实现安全表达式评估，防止代码注入：
+
+```python
+class SafeExpressionEvaluator:
+    """只允许访问预定义变量，使用AST解析而非eval()"""
+    
+    def evaluate(self, expression: str, context: Dict[str, Any]) -> bool:
+        # 支持的操作：比较、逻辑、包含、字典访问
+        # 允许的变量：work_order, order, customer, shipment, action, comment
+```
+
+#### 14.2.2 参数预检装饰器
+
+**文件位置**: `supply_chain_agent/harness/decorators.py`
+
+为Executor Agent提供可选的参数预检功能：
+
+```python
+@with_pre_check([check_required_params, check_param_range])
+async def execute_tool(self, tool_name, params):
+    # 工具执行逻辑
+```
+
+### 14.3 Layer 2: 验证与可观测层
+
+#### 14.3.1 Prometheus Metrics
+
+**文件位置**: `supply_chain_agent/harness/observability/metrics.py`
+
+提供9个标准Prometheus指标：
+
+| 指标名 | 类型 | 描述 |
+|--------|------|------|
+| `agent_requests_total` | Counter | 总请求数 |
+| `agent_request_duration_seconds` | Histogram | 请求延迟 |
+| `agent_tool_calls_total` | Counter | 工具调用次数 |
+| `agent_tool_call_duration_seconds` | Histogram | 工具调用延迟 |
+| `agent_circuit_breaker_state` | Gauge | 熔断器状态 |
+| `agent_active_sessions` | Gauge | 活跃会话数 |
+| `agent_audit_results_total` | Counter | 审计结果 |
+| `agent_rule_trigger_total` | Counter | 规则触发次数 |
+| `agent_trace_samples_total` | Counter | Trace采样数 |
+
+**访问方式**:
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+#### 14.3.2 结构化日志
+
+**文件位置**: `supply_chain_agent/harness/observability/logging_config.py`
+
+输出JSON格式日志，便于采集到ELK/Loki：
+
+```python
+logger.info("agent_step", extra={
+    "step": "parse_input",
+    "thread_id": thread_id,
+    "duration_ms": 45
+})
+
+# 输出：
+# {"timestamp": "2026-06-07T10:00:00Z", "level": "INFO", "message": "agent_step", "step": "parse_input", ...}
+```
+
+#### 14.3.3 按需Trace收集
+
+**文件位置**: `supply_chain_agent/harness/observability/trace.py`
+
+特性：
+- **采样率控制**：默认1%（通过`HARNESS_TRACE_SAMPLE_RATE`配置）
+- **错误全量记录**：任何导致任务失败的执行全量记录
+- **存储格式**：JSON Lines，按天分区，保存7天
+- **存储位置**：`/root/autodl-tmp/harness-traces/`
+
+**查询工具**:
+
+```bash
+# 查询所有错误Trace
+python -m supply_chain_agent.harness.observability.trace_cli --status error
+
+# 按Trace ID查询
+python -m supply_chain_agent.harness.observability.trace_cli --trace-id abc123
+```
+
+#### 14.3.4 Evals评估框架
+
+**文件位置**: `supply_chain_agent/harness/evals/`
+
+提供9个评估器，覆盖意图识别、工具调用、审计、端到端场景：
+
+| 评估器 | 等级 | 描述 |
+|--------|------|------|
+| `IntentAccuracyEvaluator` | Level 1 (门禁) | 意图识别准确率 |
+| `IntentConfidenceEvaluator` | Level 2 (告警) | 意图置信度 |
+| `ToolCallAccuracyEvaluator` | Level 1 (门禁) | 工具调用准确率 |
+| `ToolParamValidationEvaluator` | Level 1 (门禁) | 参数验证 |
+| `ToolExecutionSuccessEvaluator` | Level 2 (告警) | 工具执行成功率 |
+| `AuditRuleCoverageEvaluator` | Level 2 (告警) | 审计规则覆盖 |
+| `RiskScoreEvaluator` | Level 2 (告警) | 风险评分准确度 |
+| `E2EWorkflowEvaluator` | Level 1 (门禁) | 端到端工作流 |
+| `E2ELatencyEvaluator` | Level 2 (告警) | 端到端延迟 |
+
+**评估等级**：
+
+| 等级 | 名称 | 说明 |
+|------|------|------|
+| Level 1 | 门禁级 | 必须通过才能部署 |
+| Level 2 | 告警级 | 失败只告警 |
+| Level 3 | 手动级 | 可选执行 |
+
+### 14.4 Layer 3: 反馈与持续改进层
+
+#### 14.4.1 错误聚类分析
+
+**文件位置**: `supply_chain_agent/harness/feedback/cluster_errors.py`
+
+自动识别8种错误模式并生成改进建议：
+
+| 错误类型 | 匹配模式 |
+|----------|----------|
+| MissingParameterError | 缺少必要参数 |
+| ToolTimeoutError | timeout/超时 |
+| ToolExecutionError | 工具执行失败 |
+| IntentParseError | 意图解析错误 |
+| ValidationError | 验证失败 |
+| CircuitBreakerOpenError | 熔断器打开 |
+| ConnectionError | 连接错误 |
+| RateLimitError | 限流 |
+
+**使用方式**:
+
+```bash
+# 分析最近7天的错误
+python -m supply_chain_agent.harness.feedback.cluster_errors --days 7
+```
+
+#### 14.4.2 周度报告生成
+
+**文件位置**: `supply_chain_agent/harness/feedback/weekly_report.py`
+
+自动生成Markdown格式的周度分析报告，包含：
+- 性能指标概览
+- Top 3错误类型
+- Evals执行情况
+- 改进项跟踪
+
+### 14.5 环境变量配置
+
+所有Harness特性均可通过环境变量独立开关：
+
+```bash
+# Layer 1: 配置化约束
+export HARNESS_RULES_ENABLED=true           # 启用业务规则审计
+export HARNESS_RULES_PATH=/path/to/rules.yaml
+
+# Layer 2: 可观测性
+export HARNESS_STRUCTURED_LOGS=true         # 结构化日志
+export HARNESS_METRICS_ENABLED=true         # Prometheus Metrics
+export HARNESS_TRACE_ENABLED=true           # Trace收集
+export HARNESS_TRACE_SAMPLE_RATE=0.01       # 采样率
+export HARNESS_TRACE_DIR=/root/autodl-tmp/harness-traces
+
+# Layer 2: Evals
+export HARNESS_EVALS_LEVEL=1                # 评估等级
+
+# 可选功能
+export HARNESS_PRE_CHECK=false              # 参数预检装饰器
+```
+
+### 14.6 性能影响
+
+| 特性 | 性能影响 | 默认状态 |
+|------|----------|----------|
+| 业务规则审计 | <1ms/规则 | 开启 |
+| 结构化日志 | 忽略不计 | 开启 |
+| Prometheus Metrics | 忽略不计 | 开启 |
+| Trace (1%采样) | 几乎无影响 | 开启 |
+| Trace (错误全量) | ~50ms | 仅错误时 |
+
+### 14.7 相关文档
+
+- **Playbook**: `supply_chain_agent/harness/playbook.md` - 完整运维手册
+- **系统入口**: `supply_chain_agent/AGENTS.md` - 系统指南
+- **设计文档**: `docs/Harness Engineering Design.md` - 详细设计
+
+---
+
+## 15. 未来扩展建议
+
+### 15.1 功能扩展
 
 1. **更多意图支持**: 扩展更多业务场景的意图识别
 2. **多语言支持**: 支持英文等其他语言的意图识别
 3. **语音输入**: 集成语音识别，支持语音交互
 4. **批量处理**: 支持批量工单处理
 
-### 14.2 技术优化
+### 15.2 技术优化
 
 1. **流式响应**: 支持LLM流式输出，降低首字延迟
 2. **缓存优化**: 增加意图识别缓存，提升响应速度
 3. **分布式部署**: 支持Kubernetes分布式部署
-4. **监控增强**: 集成Prometheus/Grafana监控
+4. **监控增强**: 已集成Prometheus/Grafana监控（V2.7 Harness）
 
-### 14.3 企业集成
+### 15.3 企业集成
 
 1. **扩展业务数据**: 在 `dataset/BusinessData/` 添加更多业务数据文件
 2. **扩展 SOP 文档**: 在 `dataset/SOPData/` 添加更多 SOP 文档
 3. **OA系统集成**: 集成企业OA审批流程
 4. **认证授权**: 增加企业级认证授权
+
+### 15.4 Harness Engineering 增强
+
+1. **业务规则扩展**: 根据业务需求添加更多审计规则
+2. **Evals场景覆盖**: 扩展更多核心场景的自动化评估
+3. **告警集成**: 集成邮件/钉钉/企微告警通知
+4. **Dashboard可视化**: 开发Grafana Dashboard可视化监控
 
 ---
 
@@ -1361,16 +1807,25 @@ class Settings(BaseSettings):
 | 文件 | 行数 | 描述 |
 |------|------|------|
 | orchestrator.py | ~650 | 总控Agent |
-| parser.py | ~830 | 解析师Agent |
-| executor.py | ~1087 | 调度员Agent |
+| parser.py | ~835 | 解析师Agent |
+| executor.py | ~1200 | 调度员Agent（V2.6新增审批分析功能） |
 | auditor.py | ~334 | 审计员Agent |
-| workflow.py | ~949 | LangGraph工作流 |
+| workflow.py | ~1050 | LangGraph工作流 |
 | vector_store.py | ~666 | 记忆系统 |
 | app.py | ~1077 | FastAPI应用 |
 | supply_chain_db.py | ~1426 | 数据库操作 |
 | server.py | ~754 | MCP服务器 |
 | client.py | ~490 | 工具客户端 |
 | bert_ner.py | ~330 | BERT NER模块 |
+| state.py | ~240 | 状态定义（V2.6新增approval_analysis） |
+| report_generator.py | ~550 | 报告生成器（V2.6新增审批分析展示） |
+| execution_plan.py | ~180 | Prompt模板（V2.6新增审批分析模板） |
+| **harness/rules/loader.py** | ~150 | 规则加载器（V2.7新增） |
+| **harness/rules/evaluator.py** | ~180 | 规则评估引擎（V2.7新增） |
+| **harness/observability/metrics.py** | ~120 | Prometheus指标（V2.7新增） |
+| **harness/observability/trace.py** | ~190 | Trace收集器（V2.7新增） |
+| **harness/evals/base.py** | ~130 | 基础评估器（V2.7新增） |
+| **harness/feedback/cluster_errors.py** | ~230 | 错误聚类（V2.7新增） |
 
 ### B. 依赖清单
 
@@ -1383,6 +1838,8 @@ class Settings(BaseSettings):
 - pydantic>=2.0.0
 - transformers>=5.9.0
 - torch>=2.8.0
+- **prometheus-client>=0.17.0** (V2.7新增)
+- **watchdog>=3.0.0** (V2.7新增)
 
 **前端依赖**:
 - react@18.2.0
@@ -1406,6 +1863,15 @@ SCA_CLARIFICATION_MAX_ATTEMPTS=3
 SCA_VECTOR_STORE_PATH=./supply_chain_agent/data/vector_store
 SCA_SQLITE_DB_PATH=./supply_chain_agent/data/agent_memory.db
 
+# Harness Engineering配置（V2.7新增）
+HARNESS_RULES_ENABLED=true           # 启用业务规则审计
+HARNESS_STRUCTURED_LOGS=true         # 结构化日志
+HARNESS_METRICS_ENABLED=true         # Prometheus Metrics
+HARNESS_TRACE_ENABLED=true           # Trace收集
+HARNESS_TRACE_SAMPLE_RATE=0.01       # Trace采样率
+HARNESS_EVALS_LEVEL=1                # Evals评估等级
+HARNESS_PRE_CHECK=false              # 参数预检装饰器
+
 # 数据初始化
 # 首次运行需要初始化数据:
 # python -m supply_chain_agent.data.init_data
@@ -1415,4 +1881,4 @@ SCA_SQLITE_DB_PATH=./supply_chain_agent/data/agent_memory.db
 
 **报告生成完成**
 
-本报告基于对项目所有源代码和文档的全面分析生成，涵盖了项目的各个方面，包括架构设计、核心模块、技术栈、工作流程、记忆系统、工具集成、前端界面、测试评估、配置部署等。读者通过此文档即可全面了解本项目，而无需再打开代码研究。
+本报告基于对项目所有源代码和文档的全面分析生成，涵盖了项目的各个方面，包括架构设计、核心模块、技术栈、工作流程、记忆系统、工具集成、前端界面、测试评估、配置部署、Harness Engineering工程化能力等。读者通过此文档即可全面了解本项目，而无需再打开代码研究。

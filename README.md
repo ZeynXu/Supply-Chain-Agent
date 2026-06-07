@@ -31,6 +31,8 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-07: 审批工单场景优化：LLM分析推荐+用户确认审批
 >
+> 2026-06-07: Harness Engineering工程化能力：三层增强模型（配置化约束、可观测性、反馈改进）
+>
 
 ---
 
@@ -98,6 +100,25 @@ Supply-Chain-Agent/
 │   ├── prompts/                  # Prompt模板
 │   ├── nlp/                    # NLP模块
 │   │   └── bert_ner.py         # BERT实体识别
+│   ├── harness/                  # Harness Engineering工程化模块
+│   │   ├── rules/                # Layer 1: 业务规则
+│   │   │   ├── loader.py         # YAML规则加载器
+│   │   │   ├── evaluator.py      # 规则评估引擎
+│   │   │   └── business_rules.yaml
+│   │   ├── observability/        # Layer 2: 可观测性
+│   │   │   ├── metrics.py        # Prometheus指标
+│   │   │   ├── logging_config.py # 结构化日志
+│   │   │   └── trace.py          # Trace收集器
+│   │   ├── evals/                # Layer 2: Evals评估
+│   │   │   ├── base.py           # 基础评估器
+│   │   │   ├── intent_eval.py    # 意图评估器
+│   │   │   ├── tool_eval.py      # 工具评估器
+│   │   │   └── e2e_eval.py       # 端到端评估器
+│   │   ├── feedback/             # Layer 3: 反馈改进
+│   │   │   ├── cluster_errors.py # 错误聚类
+│   │   │   └── weekly_report.py  # 周度报告
+│   │   ├── spec/                 # SPEC规范文件
+│   │   └── playbook.md           # Harness运维手册
 │   ├── data/                     # Python数据模块
 │   │   ├── supply_chain.db       # 业务数据库(运行时)
 │   │   ├── agent_memory.db       # 记忆数据库(运行时)
@@ -109,13 +130,16 @@ Supply-Chain-Agent/
 │   ├── frontend/                 # React前端
 │   ├── app.py                    # FastAPI应用
 │   ├── run.py                    # 运行脚本
-│   └── config.py                 # 配置管理
+│   ├── config.py                 # 配置管理
+│   └── AGENTS.md                 # 系统入口指南
 ├── dataset/                      # 数据源目录
 │   ├── BusinessData/             # 业务数据(CSV)
 │   ├── SOPData/                  # SOP文档(Markdown)
 │   ├── OtherData/                # 配置文件
 │   └── README.md                 # 数据说明
 ├── docs/                         # 项目文档
+│   ├── PROJECT_RESEARCH_REPORT.md # 项目研究报告
+│   └── Harness Engineering Design.md # Harness设计文档
 ├── requirements.txt              # Python依赖
 └── README.md                     # 本文件
 ```
@@ -210,6 +234,24 @@ Supply-Chain-Agent/
 - **📉 降级响应**: 工具不可用时，知识库检索+LLM生成友好提示
 - **✅ 审计验证**: 执行结果必须经过审计Agent验证
 
+### 🔧 Harness Engineering 工程化能力
+
+系统内置三层工程化增强能力，所有特性通过环境变量独立开关：
+
+| 层级 | 能力 | 说明 |
+|------|------|------|
+| **Layer 1** | 配置化约束 | 业务规则YAML配置、参数预检装饰器 |
+| **Layer 2** | 验证与可观测 | Prometheus Metrics、结构化日志、Trace收集、Evals评估 |
+| **Layer 3** | 反馈与改进 | 错误聚类分析、周度报告生成 |
+
+**核心特性**：
+- **📊 Prometheus Metrics**: 9个标准指标，`/metrics`端点暴露
+- **📝 结构化日志**: JSON格式输出，便于ELK/Loki采集
+- **🔍 Trace收集**: 采样率控制+错误全量记录
+- **✅ Evals评估**: 9个评估器覆盖意图、工具、审计、端到端场景
+
+详见 [Harness Playbook](./supply_chain_agent/harness/playbook.md)
+
 ## 🚀 快速开始
 
 ### 环境要求
@@ -272,6 +314,14 @@ SCA_SQLITE_DB_PATH=./supply_chain_agent/data/agent_memory.db
 # 熔断器配置
 SCA_CIRCUIT_BREAKER_FAILURES=3
 SCA_CIRCUIT_BREAKER_RESET_TIMEOUT=300
+
+# Harness Engineering配置（工程化能力开关）
+HARNESS_RULES_ENABLED=true           # 业务规则审计
+HARNESS_STRUCTURED_LOGS=true         # 结构化日志
+HARNESS_METRICS_ENABLED=true         # Prometheus Metrics
+HARNESS_TRACE_ENABLED=true           # Trace收集
+HARNESS_TRACE_SAMPLE_RATE=0.01       # Trace采样率
+HARNESS_EVALS_LEVEL=1                # Evals评估等级(0=禁用,1=门禁,2=告警)
 ```
 
 ### 访问地址
@@ -280,6 +330,7 @@ SCA_CIRCUIT_BREAKER_RESET_TIMEOUT=300
 |------|------|------|
 | React前端 | http://localhost:3000 | 主要交互界面 |
 | FastAPI后端 | http://localhost:8000 | REST API服务 |
+| Prometheus Metrics | http://localhost:8000/metrics | 监控指标 |
 | API文档 | http://localhost:8000/api/docs | Swagger文档 |
 
 ### 使用示例
@@ -515,7 +566,7 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
 |------|------|----------|----------|
 | **Orchestrator** | orchestrator.py | ~400行 | 总控协调、依赖注入 |
 | **Parser** | parser.py | ~1000行 | 意图识别、实体提取 |
-| **Executor** | executor.py | ~1100行 | 工具编排、执行控制 |
+| **Executor** | executor.py | ~1200行 | 工具编排、执行控制、审批分析（V2.6） |
 | **Auditor** | auditor.py | ~350行 | 结果验证、风控审计 |
 | **Workflow** | workflow.py | ~1800行 | 状态机、节点逻辑 |
 | **Exceptions** | exceptions.py | ~200行 | 异常层次结构 |
@@ -523,7 +574,7 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
 | **MCP Server** | server.py | ~750行 | 工具服务、数据查询 |
 | **Database** | supply_chain_db.py | ~1400行 | 数据存储、业务查询 |
 | **App** | app.py | ~1100行 | API服务、WebSocket |
-| **总计** | - | **~8000行** | 核心业务代码 |
+| **总计** | - | **~8500行** | 核心业务代码 |
 
 ### 📋 设计原则
 
@@ -551,11 +602,11 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
    - 核心方法：`parse_intent()`, `_extract_entities_by_rules()`, `_extract_entities_by_ner()`
    - 输出：结构化意图（primary_task, secondary_task, entities, slots）
 
-3. **⚙️ Executor (调度员Agent)** (~1087行)
-   - 职责：工具编排、并发控制、结果收集
-   - 能力：熔断保护、智能重试、LLM反馈执行
-   - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`
-   - 输出：工具执行结果
+3. **⚙️ Executor (调度员Agent)** (~1200行)
+   - 职责：工具编排、并发控制、结果收集、审批分析（V2.6新增）
+   - 能力：熔断保护、智能重试、规则参数提取、LLM审批分析
+   - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`, `generate_approval_analysis()`（V2.6新增）
+   - 输出：工具执行结果、审批分析报告
 
 4. **🛡️ Auditor (审计员Agent)** (~334行)
    - 职责：结果验证、风控拦截、一致性检查
@@ -632,6 +683,13 @@ graph TD
    - 工具调用熔断保护，防止故障扩散
    - 多种重试策略，智能降级
 
+7. **📋 审批工单LLM分析推荐模式（V2.6新增）**
+   - 用户只需提供工单号，无需提前指定审批动作
+   - 工具链执行后，LLM结合SOP文档进行风险分析和审批建议
+   - 规则参数提取替代LLM解析，降低token消耗
+   - 前端展示分析结果（风险等级、审批建议），用户确认后执行
+   - 实现智能化审批辅助决策
+
 ### 🚀 工程实践
 
 1. **⚡ 三层意图识别**
@@ -645,6 +703,7 @@ graph TD
 
 3. **✅ 审批二次确认**
    - 危险操作（审批）必须用户二次确认
+   - V2.6新增LLM分析推荐+用户确认模式，智能化审批辅助决策
    - 防止误操作风险
 
 4. **📊 四维评估体系**
