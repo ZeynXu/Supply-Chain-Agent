@@ -1,0 +1,53 @@
+version: "1.0"
+metadata:
+  description: "供应链工单处理业务规则配置"
+  last_updated: "2026-06-07"
+
+rules:
+  # 大额审批规则
+  - id: "high_value_approval"
+    name: "大额审批需升级"
+    enabled: true
+    severity: "block"
+    condition: "work_order.get('amount', 0) > 500000 and work_order.get('type') == '审批'"
+    action: "require_approval_level: director"
+    message: "订单金额超过50万，需要总监级审批"
+    metadata:
+      source: "Supply Chain Business Approval Management Measures"
+      effective_date: "2026-01-01"
+
+  # 已取消订单规则
+  - id: "reject_cancelled_order"
+    name: "已取消订单不可审批"
+    enabled: true
+    severity: "block"
+    condition: "order.get('status') == 'cancelled'"
+    action: "reject"
+    message: "订单已取消，无法审批"
+
+  # 客户风险等级规则
+  - id: "customer_risk_check"
+    name: "客户风险等级D级需上报"
+    enabled: true
+    severity: "warn"
+    condition: "customer.get('risk_level') == 'D'"
+    action: "escalate"
+    message: "客户风险等级为D，建议上报风控"
+
+  # 审批意见规则
+  - id: "approval_comment_required"
+    name: "审批操作需填写意见"
+    enabled: true
+    severity: "block"
+    condition: "action in ['approve', 'reject'] and not comment"
+    action: "reject"
+    message: "审批操作必须填写审批意见"
+
+  # 物流异常规则
+  - id: "shipment_delay_alert"
+    name: "物流延迟预警"
+    enabled: true
+    severity: "warn"
+    condition: "shipment.get('late_delivery_risk') == 1"
+    action: "notify"
+    message: "存在物流延迟风险，请关注"

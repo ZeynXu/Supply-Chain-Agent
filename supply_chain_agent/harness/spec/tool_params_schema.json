@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tool Parameters Schema",
+  "description": "工具参数规范",
+  "definitions": {
+    "query_customer": {
+      "type": "object",
+      "required": ["customer_id"],
+      "properties": {
+        "customer_id": {
+          "type": "integer",
+          "description": "客户ID"
+        }
+      }
+    },
+    "query_order": {
+      "type": "object",
+      "required": ["order_id"],
+      "properties": {
+        "order_id": {
+          "type": "integer",
+          "description": "订单ID"
+        }
+      }
+    },
+    "query_shipment": {
+      "type": "object",
+      "required": ["order_id"],
+      "properties": {
+        "order_id": {
+          "type": "integer",
+          "description": "订单ID"
+        }
+      }
+    },
+    "create_work_order": {
+      "type": "object",
+      "required": ["work_order_type", "description"],
+      "properties": {
+        "work_order_type": {
+          "type": "string",
+          "enum": ["审批", "上报"],
+          "description": "工单类型"
+        },
+        "description": {
+          "type": "string",
+          "description": "工单描述"
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["高", "中", "低"],
+          "description": "优先级"
+        }
+      }
+    },
+    "approve_work_order": {
+      "type": "object",
+      "required": ["work_order_id", "action"],
+      "properties": {
+        "work_order_id": {
+          "type": "integer",
+          "description": "工单ID"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["approve", "reject"],
+          "description": "审批动作"
+        },
+        "comment": {
+          "type": "string",
+          "description": "审批意见"
+        }
+      }
+    }
+  }
+}

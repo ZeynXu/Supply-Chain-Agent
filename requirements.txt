@@ -68,3 +68,8 @@ matplotlib>=3.7.0
 black>=24.0.0
 # MyPy - Static type checker
 mypy>=1.0.0
+
+# Harness Engineering 依赖
+prometheus-client>=0.17.0
+watchdog>=3.0.0
+
