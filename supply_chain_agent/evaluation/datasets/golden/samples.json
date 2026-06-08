@@ -1,0 +1,422 @@
+[
+    {
+        "sample_id": "golden_001",
+        "user_query": "查询客户C001的订单信息",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "订单查询"},
+            "expected_tools": ["query_order"],
+            "expected_response_keywords": ["订单", "C001"],
+            "expected_violations": [],
+            "expected_response": "客户C001的订单信息如下..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "订单"]
+    },
+    {
+        "sample_id": "golden_002",
+        "user_query": "创建一个紧急工单，客户是C002，问题描述是货物损坏",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "创建成功", "C002"],
+            "expected_violations": [],
+            "expected_response": "已成功创建紧急工单..."
+        },
+        "category": "tool",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "紧急"]
+    },
+    {
+        "sample_id": "golden_003",
+        "user_query": "审批工单WO001，同意",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "审批工单"},
+            "expected_tools": ["approve_work_order"],
+            "expected_response_keywords": ["审批", "成功", "WO001"],
+            "expected_violations": [],
+            "expected_response": "工单WO001已审批通过..."
+        },
+        "category": "tool",
+        "difficulty": "easy",
+        "tags": ["审批", "工单"]
+    },
+    {
+        "sample_id": "golden_004",
+        "user_query": "查询物流单号S001的配送状态",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "物流查询"},
+            "expected_tools": ["query_shipment"],
+            "expected_response_keywords": ["物流", "S001", "状态"],
+            "expected_violations": [],
+            "expected_response": "物流单号S001的配送状态为..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "物流"]
+    },
+    {
+        "sample_id": "golden_005",
+        "user_query": "你好",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "闲聊", "intent_level_2": "问候"},
+            "expected_tools": [],
+            "expected_response_keywords": ["你好", "帮助"],
+            "expected_violations": [],
+            "expected_response": "你好！我是供应链工单处理助手..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["闲聊", "问候"]
+    },
+    {
+        "sample_id": "golden_006",
+        "user_query": "查询客户C003的基本信息",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "客户查询"},
+            "expected_tools": ["query_customer"],
+            "expected_response_keywords": ["客户", "C003", "信息"],
+            "expected_violations": [],
+            "expected_response": "客户C003的基本信息如下..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "客户"]
+    },
+    {
+        "sample_id": "golden_007",
+        "user_query": "我想查询订单O12345的详情",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "订单查询"},
+            "expected_tools": ["query_order"],
+            "expected_response_keywords": ["订单", "O12345", "详情"],
+            "expected_violations": [],
+            "expected_response": "订单O12345的详情如下..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "订单"]
+    },
+    {
+        "sample_id": "golden_008",
+        "user_query": "帮我创建一个工单",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": [],
+            "expected_response_keywords": ["客户", "问题", "工单类型"],
+            "expected_violations": [],
+            "expected_response": "请提供客户信息和问题描述以便创建工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "缺失信息"]
+    },
+    {
+        "sample_id": "golden_009",
+        "user_query": "货物丢了怎么办",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "异常上报", "intent_level_2": "上报问题"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "货物丢失", "处理"],
+            "expected_violations": [],
+            "expected_response": "已为您创建货物丢失工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["异常", "上报"]
+    },
+    {
+        "sample_id": "golden_010",
+        "user_query": "审批工单WO002，拒绝，原因是信息不完整",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "审批工单"},
+            "expected_tools": ["approve_work_order"],
+            "expected_response_keywords": ["审批", "拒绝", "WO002"],
+            "expected_violations": [],
+            "expected_response": "工单WO002已审批拒绝..."
+        },
+        "category": "tool",
+        "difficulty": "medium",
+        "tags": ["审批", "工单", "拒绝"]
+    },
+    {
+        "sample_id": "golden_011",
+        "user_query": "查询不存在的客户XXX999",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "客户查询"},
+            "expected_tools": ["query_customer"],
+            "expected_response_keywords": ["不存在", "未找到", "XXX999"],
+            "expected_violations": [],
+            "expected_response": "未找到客户XXX999的信息..."
+        },
+        "category": "edge_case",
+        "difficulty": "medium",
+        "tags": ["边界", "不存在"]
+    },
+    {
+        "sample_id": "golden_012",
+        "user_query": "今天的天气怎么样",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "闲聊", "intent_level_2": "其他"},
+            "expected_tools": [],
+            "expected_response_keywords": ["天气", "供应链", "帮助"],
+            "expected_violations": [],
+            "expected_response": "我是供应链工单处理助手，无法查询天气信息..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["闲聊", "超出范围"]
+    },
+    {
+        "sample_id": "golden_013",
+        "user_query": "我有一批货物需要紧急配送",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "紧急", "配送"],
+            "expected_violations": [],
+            "expected_response": "已为您创建紧急配送工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "紧急"]
+    },
+    {
+        "sample_id": "golden_014",
+        "user_query": "查询订单O99999的物流信息",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "物流查询"},
+            "expected_tools": ["query_shipment"],
+            "expected_response_keywords": ["物流", "配送", "O99999"],
+            "expected_violations": [],
+            "expected_response": "订单O99999的物流信息如下..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "物流"]
+    },
+    {
+        "sample_id": "golden_015",
+        "user_query": "客户C005投诉收到的货物有破损",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "异常上报", "intent_level_2": "上报问题"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "破损", "C005"],
+            "expected_violations": [],
+            "expected_response": "已为C005创建货物破损工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["异常", "上报", "破损"]
+    },
+    {
+        "sample_id": "golden_016",
+        "user_query": "帮我看看工单WO003现在的状态",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "工单查询"},
+            "expected_tools": ["query_work_order"],
+            "expected_response_keywords": ["工单", "WO003", "状态"],
+            "expected_violations": [],
+            "expected_response": "工单WO003的当前状态为..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "工单"]
+    },
+    {
+        "sample_id": "golden_017",
+        "user_query": "物流单S999已经到哪了",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "物流查询"},
+            "expected_tools": ["query_shipment"],
+            "expected_response_keywords": ["物流", "S999", "位置"],
+            "expected_violations": [],
+            "expected_response": "物流单S999目前位于..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "物流"]
+    },
+    {
+        "sample_id": "golden_018",
+        "user_query": "我需要修改订单O12345的收货地址",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "修改", "地址"],
+            "expected_violations": [],
+            "expected_response": "已为您创建订单修改工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "修改"]
+    },
+    {
+        "sample_id": "golden_019",
+        "user_query": "查询客户C001的所有订单",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "订单查询"},
+            "expected_tools": ["query_order"],
+            "expected_response_keywords": ["订单", "C001", "列表"],
+            "expected_violations": [],
+            "expected_response": "客户C001的订单列表如下..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["查询", "订单", "列表"]
+    },
+    {
+        "sample_id": "golden_020",
+        "user_query": "谢谢你的帮助",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "闲聊", "intent_level_2": "感谢"},
+            "expected_tools": [],
+            "expected_response_keywords": ["不客气", "帮助"],
+            "expected_violations": [],
+            "expected_response": "不客气，很高兴能帮助您..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["闲聊", "感谢"]
+    },
+    {
+        "sample_id": "golden_021",
+        "user_query": "审批一个金额超过100万的工单WO999",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "审批工单"},
+            "expected_tools": ["approve_work_order"],
+            "expected_response_keywords": ["审批", "WO999", "金额"],
+            "expected_violations": ["金额超限"],
+            "expected_response": "工单WO999金额超过限额，需要高级审批..."
+        },
+        "category": "tool",
+        "difficulty": "hard",
+        "tags": ["审批", "工单", "高风险"]
+    },
+    {
+        "sample_id": "golden_022",
+        "user_query": "查询客户信息",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "客户查询"},
+            "expected_tools": [],
+            "expected_response_keywords": ["客户ID", "客户编号"],
+            "expected_violations": [],
+            "expected_response": "请提供您要查询的客户ID或客户编号..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["查询", "客户", "缺失信息"]
+    },
+    {
+        "sample_id": "golden_023",
+        "user_query": "我要投诉",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "异常上报", "intent_level_2": "上报问题"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["投诉", "工单", "问题"],
+            "expected_violations": [],
+            "expected_response": "已为您创建投诉工单，请描述具体问题..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["异常", "投诉"]
+    },
+    {
+        "sample_id": "golden_024",
+        "user_query": "创建工单，客户C001，问题类型是延迟配送，优先级高",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "创建成功", "C001"],
+            "expected_violations": [],
+            "expected_response": "已为客户C001创建高优先级延迟配送工单..."
+        },
+        "category": "tool",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "高优先级"]
+    },
+    {
+        "sample_id": "golden_025",
+        "user_query": "这个订单什么时候能送到",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "物流查询"},
+            "expected_tools": [],
+            "expected_response_keywords": ["订单号", "订单ID"],
+            "expected_violations": [],
+            "expected_response": "请提供订单号以便查询配送时间..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["查询", "物流", "缺失信息"]
+    },
+    {
+        "sample_id": "golden_026",
+        "user_query": "批量查询客户C001、C002、C003的订单",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "订单查询"},
+            "expected_tools": ["query_order"],
+            "expected_response_keywords": ["订单", "C001", "C002", "C003"],
+            "expected_violations": [],
+            "expected_response": "客户C001、C002、C003的订单信息如下..."
+        },
+        "category": "intent",
+        "difficulty": "hard",
+        "tags": ["查询", "订单", "批量"]
+    },
+    {
+        "sample_id": "golden_027",
+        "user_query": "取消订单O88888",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "取消", "O88888"],
+            "expected_violations": [],
+            "expected_response": "已为您创建订单取消工单..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "取消"]
+    },
+    {
+        "sample_id": "golden_028",
+        "user_query": "查询本月所有待审批的工单",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "信息查询", "intent_level_2": "工单查询"},
+            "expected_tools": ["query_work_order"],
+            "expected_response_keywords": ["工单", "待审批", "列表"],
+            "expected_violations": [],
+            "expected_response": "本月待审批工单列表如下..."
+        },
+        "category": "intent",
+        "difficulty": "medium",
+        "tags": ["查询", "工单", "筛选"]
+    },
+    {
+        "sample_id": "golden_029",
+        "user_query": "你是什么系统",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "闲聊", "intent_level_2": "询问"},
+            "expected_tools": [],
+            "expected_response_keywords": ["供应链", "工单", "处理"],
+            "expected_violations": [],
+            "expected_response": "我是智能供应链工单处理系统..."
+        },
+        "category": "intent",
+        "difficulty": "easy",
+        "tags": ["闲聊", "询问"]
+    },
+    {
+        "sample_id": "golden_030",
+        "user_query": "创建一个紧急工单，客户C999，问题是货物丢失，需要赔偿",
+        "gold_result": {
+            "expected_intent": {"intent_level_1": "工单管理", "intent_level_2": "创建工单"},
+            "expected_tools": ["create_work_order"],
+            "expected_response_keywords": ["工单", "紧急", "赔偿"],
+            "expected_violations": [],
+            "expected_response": "已为客户C999创建紧急货物丢失赔偿工单..."
+        },
+        "category": "tool",
+        "difficulty": "medium",
+        "tags": ["创建", "工单", "紧急", "赔偿"]
+    }
+]

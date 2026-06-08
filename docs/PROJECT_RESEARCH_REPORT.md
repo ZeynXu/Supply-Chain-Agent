@@ -1,9 +1,9 @@
 # 智能供应链工单处理Agent系统 - 项目研究报告
 
-**文档版本**: V2.7
-**生成日期**: 2026年6月7日
+**文档版本**: V2.8
+**生成日期**: 2026年6月8日
 **研究范围**: 完整项目代码与文档分析
-**更新说明**: V2.7新增Harness Engineering工程化能力（三层增强模型：配置化约束层、验证与可观测层、反馈与持续改进层）  
+**更新说明**: V2.8新增Agent评估系统（四层评估架构：九维轨迹评分、LLM Judge质量评分、Cohen's Kappa校准、数据集管理）  
 
 ---
 
@@ -23,7 +23,8 @@
 12. [项目特色与创新点](#12-项目特色与创新点)
 13. [代码质量分析](#13-代码质量分析)
 14. [Harness Engineering 工程化能力](#14-harness-engineering-工程化能力-v27新增)
-15. [未来扩展建议](#15-未来扩展建议)
+15. [Agent评估系统](#15-agent评估系统-v28新增)
+16. [未来扩展建议](#16-未来扩展建议)
 
 ---
 
@@ -125,6 +126,22 @@ Supply_Chain_Agent/
 │   │   │   ├── intent_schema.json
 │   │   │   └── tool_params_schema.json
 │   │   └── playbook.md           # Harness运维手册
+│   ├── evaluation/               # Agent评估系统 (V2.8新增)
+│   │   ├── __init__.py           # 模块初始化
+│   │   ├── trajectory_scorer.py  # 九维轨迹评分
+│   │   ├── quality_scorer.py     # LLM Judge质量评分
+│   │   ├── kappa_calibration.py  # Cohen's Kappa校准
+│   │   ├── harness_integration.py # Harness集成
+│   │   ├── datasets/             # 数据集管理
+│   │   │   ├── __init__.py
+│   │   │   ├── dataset_manager.py # 数据集管理器
+│   │   │   └── golden/           # Golden Samples
+│   │   │       └── samples.json  # 30个标准样本
+│   │   └── monitoring/           # 监控与告警
+│   │       ├── __init__.py
+│   │       ├── metrics_exporter.py # Prometheus指标导出
+│   │       ├── alert_manager.py   # 告警管理器
+│   │       └── dashboard.py       # 仪表盘数据
 │   ├── utils/                    # 工具函数
 │   │   └── field_mapping.py      # 字段映射
 │   ├── frontend/                 # React前端
@@ -1768,30 +1785,480 @@ export HARNESS_PRE_CHECK=false              # 参数预检装饰器
 
 ---
 
-## 15. 未来扩展建议
+## 15. Agent评估系统 (V2.8新增)
 
-### 15.1 功能扩展
+### 15.1 设计理念
+
+基于 `docs/Agent Eval.md` 设计文档，实现完整的Agent评估系统，采用**四层评估架构**：
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│           Layer 4: 监控与告警（Monitoring & Alerting）        │
+│    • Prometheus指标导出                                       │
+│    • 仪表盘数据API                                            │
+│    • 告警规则管理                                             │
+├─────────────────────────────────────────────────────────────┤
+│           Layer 3: Harness集成（Harness Integration）         │
+│    • 复用Harness Rules评估                                    │
+│    • 复用Harness Evals评估器                                  │
+│    • 复用Harness错误聚类                                      │
+├─────────────────────────────────────────────────────────────┤
+│           Layer 2: LLM Judge校准（Calibration）               │
+│    • Cohen's Kappa一致性检验                                  │
+│    • Golden Samples校准集                                     │
+│    • 人机一致性保障                                           │
+├─────────────────────────────────────────────────────────────┤
+│           Layer 1: 轨迹评分（Trajectory Scoring）             │
+│    • 九维客观指标评分                                          │
+│    • 基于规则的确定性评估                                      │
+│    • 工具调用轨迹分析                                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 15.2 Layer 1: 九维轨迹评分
+
+**文件位置**: `supply_chain_agent/evaluation/trajectory_scorer.py`
+
+客观评估Agent执行轨迹，9个维度均为确定性规则评分：
+
+| 维度 | 满分 | 评估规则 |
+|------|------|----------|
+| **tool_selection** | 10 | 正确工具选择比例 |
+| **params_complete** | 10 | 必需参数完整度 |
+| **params_valid** | 10 | 参数值有效性 |
+| **execution_order** | 10 | 工具调用顺序正确性 |
+| **audit_compliance** | 10 | 审计规则合规性 |
+| **answer_reachability** | 10 | 最终答案可达性 |
+| **error_recovery** | 10 | 错误恢复成功率 |
+| **clarification_efficiency** | 10 | 澄清效率（最少澄清次数） |
+| **latency** | 10 | 响应延迟评分 |
+
+**评分实现**：
+
+```python
+class TrajectoryScorer:
+    """九维轨迹评分器"""
+
+    def score(self, trajectory: Trajectory) -> TrajectoryScore:
+        """
+        计算九维评分
+
+        每个维度独立评分，最终计算加权总分
+        """
+        scores = {
+            "tool_selection": self._score_tool_selection(trajectory),
+            "params_complete": self._score_params_complete(trajectory),
+            "params_valid": self._score_params_valid(trajectory),
+            "execution_order": self._score_execution_order(trajectory),
+            "audit_compliance": self._score_audit_compliance(trajectory),
+            "answer_reachability": self._score_answer_reachability(trajectory),
+            "error_recovery": self._score_error_recovery(trajectory),
+            "clarification_efficiency": self._score_clarification_efficiency(trajectory),
+            "latency": self._score_latency(trajectory),
+        }
+        total = sum(scores.values()) / len(scores)
+        return TrajectoryScore(dimensions=scores, total=total)
+```
+
+### 15.3 Layer 2: LLM Judge质量评分
+
+**文件位置**: `supply_chain_agent/evaluation/quality_scorer.py`
+
+使用LLM评估主观质量维度：
+
+| 维度 | 满分 | 评估内容 |
+|------|------|----------|
+| **helpfulness** | 10 | 回答对用户有帮助程度 |
+| **clarity** | 10 | 回答清晰度、结构化程度 |
+| **faithfulness** | 10 | 回答对工具结果的忠实度 |
+
+**Prompt模板**：
+
+```python
+QUALITY_EVAL_PROMPT = """你是一个客观的评估专家。请评估以下Agent回答的质量。
+
+## 用户问题
+{question}
+
+## Agent回答
+{answer}
+
+## 工具结果
+{tool_results}
+
+## 评估标准
+1. **helpfulness (有帮助程度)**: 回答是否解决了用户问题？
+   - 10分: 完全解决，信息准确完整
+   - 7分: 基本解决，有少量遗漏
+   - 4分: 部分解决，有明显不足
+   - 1分: 未解决问题
+
+2. **clarity (清晰度)**: 回答是否清晰易懂？
+   - 10分: 结构清晰，表述精准
+   - 7分: 基本清晰，可优化
+   - 4分: 有些混乱
+   - 1分: 难以理解
+
+3. **faithfulness (忠实度)**: 回答是否基于工具结果？
+   - 10分: 完全基于事实，无幻觉
+   - 7分: 基本基于事实，有合理推断
+   - 4分: 有少量幻觉
+   - 1分: 严重幻觉
+
+## 输出格式
+输出JSON: {"helpfulness": <1-10>, "clarity": <1-10>, "faithfulness": <1-10>}
+"""
+```
+
+**LLM配置接口**：
+
+```python
+class QualityScorer:
+    """LLM Judge质量评分器"""
+
+    def __init__(self, llm_client: Optional[LLMClient] = None):
+        """
+        初始化质量评分器
+
+        Args:
+            llm_client: LLM客户端，默认使用GLM-4.7-flash
+        """
+        self.llm = llm_client or self._get_default_llm()
+
+    def _get_default_llm(self) -> LLMClient:
+        """获取默认LLM客户端（GLM-4.7-flash）"""
+        from supply_chain_agent.agents.llm_client import get_llm_client
+        return get_llm_client()
+```
+
+### 15.4 Layer 3: Cohen's Kappa校准
+
+**文件位置**: `supply_chain_agent/evaluation/kappa_calibration.py`
+
+使用Cohen's Kappa系数验证人机评估一致性：
+
+```python
+class KappaCalibrator:
+    """Cohen's Kappa校准器"""
+
+    def calculate_kappa(
+        self,
+        human_scores: List[int],
+        llm_scores: List[int]
+    ) -> KappaResult:
+        """
+        计算Cohen's Kappa系数
+
+        Kappa值解释：
+        - > 0.8: 优秀一致性
+        - 0.6-0.8: 良好一致性
+        - 0.4-0.6: 中等一致性
+        - < 0.4: 需要校准
+        """
+        from sklearn.metrics import cohen_kappa_score
+        kappa = cohen_kappa_score(human_scores, llm_scores)
+        return KappaResult(
+            kappa=kappa,
+            interpretation=self._interpret_kappa(kappa),
+            needs_calibration=kappa < 0.6
+        )
+
+    def calibrate_with_golden_samples(
+        self,
+        golden_samples: List[GoldenSample]
+    ) -> CalibrationResult:
+        """
+        使用Golden Samples进行校准
+
+        1. 运行LLM评估Golden Samples
+        2. 对比人类专家评分
+        3. 计算Kappa系数
+        4. 如果<0.6，提示需要调整Prompt
+        """
+```
+
+### 15.5 Golden Samples数据集
+
+**文件位置**: `supply_chain_agent/evaluation/datasets/golden/samples.json`
+
+包含30个标准评估样本，覆盖所有核心场景：
+
+| 场景 | 样本数 | 覆盖内容 |
+|------|--------|----------|
+| 订单查询 | 5 | 订单号提取、订单详情、物流关联 |
+| 物流查询 | 4 | 物流轨迹、配送状态 |
+| 客户查询 | 4 | 客户信息、订单历史、统计数据 |
+| 工单创建 | 5 | 各类型工单创建、参数验证 |
+| 审批工单 | 6 | 审批流程、风险分析、用户确认 |
+| 异常上报 | 4 | 异常类型识别、紧急程度 |
+| 边缘场景 | 2 | 模糊输入、参数缺失 |
+
+**Golden Sample结构**：
+
+```json
+{
+  "id": "GS-001",
+  "scenario": "order_query",
+  "input": "查询订单77202的状态",
+  "expected_intent": {
+    "intent_level_1": "信息查询",
+    "intent_level_2": "订单查询"
+  },
+  "expected_entities": {
+    "order_id": "77202"
+  },
+  "expected_tools": ["query_order"],
+  "expected_answer_patterns": ["订单状态", "配送状态"],
+  "human_quality_scores": {
+    "helpfulness": 10,
+    "clarity": 9,
+    "faithfulness": 10
+  }
+}
+```
+
+### 15.6 Layer 4: Harness集成
+
+**文件位置**: `supply_chain_agent/evaluation/harness_integration.py`
+
+复用现有Harness Engineering模块：
+
+```python
+class HarnessRulesIntegration:
+    """集成Harness业务规则评估"""
+
+    def __init__(self):
+        from supply_chain_agent.harness.rules.evaluator import RuleEvaluator
+        self.evaluator = RuleEvaluator()
+
+    def evaluate_trajectory(self, trajectory: Trajectory) -> Dict:
+        """使用Harness规则评估轨迹"""
+        return self.evaluator.evaluate(trajectory.to_dict())
+
+
+class HarnessEvalsIntegration:
+    """集成Harness Evals评估器"""
+
+    def __init__(self):
+        from supply_chain_agent.harness.evals import (
+            IntentAccuracyEvaluator,
+            ToolCallAccuracyEvaluator,
+            E2EWorkflowEvaluator
+        )
+        self.intent_eval = IntentAccuracyEvaluator()
+        self.tool_eval = ToolCallAccuracyEvaluator()
+        self.e2e_eval = E2EWorkflowEvaluator()
+
+    def evaluate(self, trajectory: Trajectory) -> Dict:
+        """运行所有Harness评估器"""
+        return {
+            "intent_accuracy": self.intent_eval.evaluate(trajectory),
+            "tool_accuracy": self.tool_eval.evaluate(trajectory),
+            "e2e_workflow": self.e2e_eval.evaluate(trajectory)
+        }
+
+
+class HarnessErrorClusterIntegration:
+    """集成Harness错误聚类"""
+
+    def __init__(self):
+        from supply_chain_agent.harness.feedback.cluster_errors import cluster_errors
+        self.cluster_errors = cluster_errors
+
+    def analyze_errors(self, trajectories: List[Trajectory]) -> Dict:
+        """分析轨迹中的错误模式"""
+        return self.cluster_errors(trajectories)
+```
+
+### 15.7 数据集管理
+
+**文件位置**: `supply_chain_agent/evaluation/datasets/dataset_manager.py`
+
+```python
+class DatasetManager:
+    """评估数据集管理器"""
+
+    def load_golden_samples(self) -> List[GoldenSample]:
+        """加载Golden Samples"""
+        with open("golden/samples.json") as f:
+            return [GoldenSample(**s) for s in json.load(f)]
+
+    def load_evaluation_set(self, name: str) -> List[Dict]:
+        """加载指定评估集"""
+        return self._load_json(f"evaluation_sets/{name}.json")
+
+    def save_results(self, results: EvalResults, name: str):
+        """保存评估结果"""
+        path = f"results/{name}_{datetime.now():%Y%m%d_%H%M%S}.json"
+        with open(path, 'w') as f:
+            json.dump(results.to_dict(), f, indent=2)
+```
+
+### 15.8 监控与告警
+
+**文件位置**: `supply_chain_agent/evaluation/monitoring/`
+
+#### Prometheus指标导出
+
+```python
+# metrics_exporter.py
+EVAL_RUN_COUNT = Counter(
+    'agent_eval_run_total',
+    '评估运行总次数',
+    ['evaluator_type']
+)
+
+TRAJECTORY_SCORE = Histogram(
+    'agent_trajectory_score',
+    '轨迹评分分布',
+    ['dimension'],
+    buckets=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+)
+
+QUALITY_SCORE = Histogram(
+    'agent_quality_score',
+    '质量评分分布',
+    ['dimension'],
+    buckets=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+)
+
+KAPPA_SCORE = Gauge(
+    'agent_eval_kappa_score',
+    'Kappa一致性系数'
+)
+```
+
+#### API端点
+
+| 端点 | 方法 | 功能 |
+|------|------|------|
+| `/metrics` | GET | Prometheus指标（含评估指标） |
+| `/eval/dashboard` | GET | 评估仪表盘数据 |
+| `/eval/metrics` | GET | 评估指标详情 |
+| `/eval/alerts` | GET | 评估告警列表 |
+
+#### 告警规则
+
+```python
+# alert_manager.py
+ALERT_RULES = [
+    {
+        "name": "low_trajectory_score",
+        "condition": "avg_trajectory_score < 7.0",
+        "severity": "warning",
+        "message": "平均轨迹评分低于7.0，需要优化"
+    },
+    {
+        "name": "low_kappa",
+        "condition": "kappa_score < 0.6",
+        "severity": "critical",
+        "message": "Kappa一致性低于0.6，需要校准LLM Judge"
+    },
+    {
+        "name": "high_error_rate",
+        "condition": "error_rate > 0.1",
+        "severity": "warning",
+        "message": "评估错误率超过10%"
+    }
+]
+```
+
+### 15.9 环境变量配置
+
+```bash
+# Agent评估系统配置（V2.8新增）
+EVAL_ENABLED=true                      # 启用评估系统
+EVAL_LLM_PROVIDER=zhipu                # LLM Judge提供商
+EVAL_LLM_MODEL=glm-4.7-flash           # LLM Judge模型
+EVAL_KAPPA_THRESHOLD=0.6               # Kappa校准阈值
+EVAL_GOLDEN_SAMPLES_PATH=./evaluation/datasets/golden/samples.json
+EVAL_RESULTS_PATH=./evaluation/results/
+```
+
+### 15.10 使用示例
+
+```python
+from supply_chain_agent.evaluation import EvalRunner
+
+# 创建评估运行器
+runner = EvalRunner()
+
+# 运行完整评估
+results = await runner.run_full_evaluation(
+    trajectory=my_trajectory,
+    run_kappa_calibration=True
+)
+
+# 查看结果
+print(f"轨迹总分: {results.trajectory_score.total:.2f}")
+print(f"质量评分: {results.quality_score.total:.2f}")
+print(f"Kappa系数: {results.kappa_result.kappa:.3f}")
+
+# 检查是否需要校准
+if results.kappa_result.needs_calibration:
+    print("警告: LLM Judge需要校准!")
+```
+
+### 15.11 评估报告
+
+评估完成后自动生成Markdown格式报告：
+
+```markdown
+# Agent评估报告
+
+**评估时间**: 2026-06-08 12:00:00
+**样本数量**: 30
+
+## 轨迹评分
+
+| 维度 | 平均分 | 标准差 |
+|------|--------|--------|
+| tool_selection | 9.2 | 0.8 |
+| params_complete | 8.5 | 1.2 |
+| params_valid | 9.0 | 0.9 |
+| ... | ... | ... |
+| **总分** | **8.7** | 0.6 |
+
+## 质量评分
+
+| 维度 | 平均分 | Kappa系数 |
+|------|--------|-----------|
+| helpfulness | 8.5 | 0.82 |
+| clarity | 8.8 | 0.79 |
+| faithfulness | 9.1 | 0.85 |
+
+## 改进建议
+
+1. params_complete维度得分较低，建议优化实体提取逻辑
+2. clarification_efficiency有提升空间，可减少澄清轮次
+```
+
+---
+
+## 16. 未来扩展建议
+
+### 16.1 功能扩展
 
 1. **更多意图支持**: 扩展更多业务场景的意图识别
 2. **多语言支持**: 支持英文等其他语言的意图识别
 3. **语音输入**: 集成语音识别，支持语音交互
 4. **批量处理**: 支持批量工单处理
 
-### 15.2 技术优化
+### 16.2 技术优化
 
 1. **流式响应**: 支持LLM流式输出，降低首字延迟
 2. **缓存优化**: 增加意图识别缓存，提升响应速度
 3. **分布式部署**: 支持Kubernetes分布式部署
 4. **监控增强**: 已集成Prometheus/Grafana监控（V2.7 Harness）
 
-### 15.3 企业集成
+### 16.3 企业集成
 
 1. **扩展业务数据**: 在 `dataset/BusinessData/` 添加更多业务数据文件
 2. **扩展 SOP 文档**: 在 `dataset/SOPData/` 添加更多 SOP 文档
 3. **OA系统集成**: 集成企业OA审批流程
 4. **认证授权**: 增加企业级认证授权
 
-### 15.4 Harness Engineering 增强
+### 16.4 Harness Engineering 增强
 
 1. **业务规则扩展**: 根据业务需求添加更多审计规则
 2. **Evals场景覆盖**: 扩展更多核心场景的自动化评估
@@ -1812,7 +2279,7 @@ export HARNESS_PRE_CHECK=false              # 参数预检装饰器
 | auditor.py | ~334 | 审计员Agent |
 | workflow.py | ~1050 | LangGraph工作流 |
 | vector_store.py | ~666 | 记忆系统 |
-| app.py | ~1077 | FastAPI应用 |
+| app.py | ~1100 | FastAPI应用（V2.8新增评估端点） |
 | supply_chain_db.py | ~1426 | 数据库操作 |
 | server.py | ~754 | MCP服务器 |
 | client.py | ~490 | 工具客户端 |
@@ -1826,6 +2293,14 @@ export HARNESS_PRE_CHECK=false              # 参数预检装饰器
 | **harness/observability/trace.py** | ~190 | Trace收集器（V2.7新增） |
 | **harness/evals/base.py** | ~130 | 基础评估器（V2.7新增） |
 | **harness/feedback/cluster_errors.py** | ~230 | 错误聚类（V2.7新增） |
+| **evaluation/trajectory_scorer.py** | ~350 | 九维轨迹评分（V2.8新增） |
+| **evaluation/quality_scorer.py** | ~280 | LLM Judge质量评分（V2.8新增） |
+| **evaluation/kappa_calibration.py** | ~200 | Cohen's Kappa校准（V2.8新增） |
+| **evaluation/harness_integration.py** | ~250 | Harness集成（V2.8新增） |
+| **evaluation/datasets/dataset_manager.py** | ~150 | 数据集管理（V2.8新增） |
+| **evaluation/monitoring/metrics_exporter.py** | ~180 | Prometheus指标导出（V2.8新增） |
+| **evaluation/monitoring/alert_manager.py** | ~120 | 告警管理（V2.8新增） |
+| **evaluation/monitoring/dashboard.py** | ~200 | 仪表盘数据（V2.8新增） |
 
 ### B. 依赖清单
 
@@ -1840,6 +2315,7 @@ export HARNESS_PRE_CHECK=false              # 参数预检装饰器
 - torch>=2.8.0
 - **prometheus-client>=0.17.0** (V2.7新增)
 - **watchdog>=3.0.0** (V2.7新增)
+- **scikit-learn>=1.0.0** (V2.8新增，用于Kappa计算)
 
 **前端依赖**:
 - react@18.2.0
@@ -1872,6 +2348,14 @@ HARNESS_TRACE_SAMPLE_RATE=0.01       # Trace采样率
 HARNESS_EVALS_LEVEL=1                # Evals评估等级
 HARNESS_PRE_CHECK=false              # 参数预检装饰器
 
+# Agent评估系统配置（V2.8新增）
+EVAL_ENABLED=true                    # 启用评估系统
+EVAL_LLM_PROVIDER=zhipu              # LLM Judge提供商
+EVAL_LLM_MODEL=glm-4.7-flash         # LLM Judge模型
+EVAL_KAPPA_THRESHOLD=0.6             # Kappa校准阈值
+EVAL_GOLDEN_SAMPLES_PATH=./evaluation/datasets/golden/samples.json
+EVAL_RESULTS_PATH=./evaluation/results/
+
 # 数据初始化
 # 首次运行需要初始化数据:
 # python -m supply_chain_agent.data.init_data
@@ -1881,4 +2365,4 @@ HARNESS_PRE_CHECK=false              # 参数预检装饰器
 
 **报告生成完成**
 
-本报告基于对项目所有源代码和文档的全面分析生成，涵盖了项目的各个方面，包括架构设计、核心模块、技术栈、工作流程、记忆系统、工具集成、前端界面、测试评估、配置部署、Harness Engineering工程化能力等。读者通过此文档即可全面了解本项目，而无需再打开代码研究。
+本报告基于对项目所有源代码和文档的全面分析生成，涵盖了项目的各个方面，包括架构设计、核心模块、技术栈、工作流程、记忆系统、工具集成、前端界面、测试评估、配置部署、Harness Engineering工程化能力、Agent评估系统等。读者通过此文档即可全面了解本项目，而无需再打开代码研究。

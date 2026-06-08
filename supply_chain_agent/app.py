@@ -355,6 +355,18 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # ==================== Harness Metrics 集成 ====================
+    # 添加 Prometheus 格式的 /metrics 端点
+    from supply_chain_agent.harness.observability.metrics import setup_metrics_endpoint
+    app = setup_metrics_endpoint(app)
+
+    # ==================== 评估系统监控端点 ====================
+    # 添加评估系统的监控端点
+    from supply_chain_agent.evaluation.monitoring.dashboard import setup_dashboard_routes
+    from supply_chain_agent.evaluation import EvalDashboard
+    eval_dashboard = EvalDashboard()
+    app = setup_dashboard_routes(app, eval_dashboard)
+
     # L10修复：添加API版本控制路由
     from fastapi import APIRouter
     api_v1_router = APIRouter(prefix="/api/v1")
@@ -392,13 +404,17 @@ def create_app() -> FastAPI:
             "status": "running",
             "endpoints": {
                 "/health": "GET - Health check",
+                "/metrics": "GET - Prometheus metrics (Harness)",
+                "/eval/dashboard": "GET - Evaluation dashboard data",
+                "/eval/metrics": "GET - Evaluation metrics",
+                "/eval/alerts": "GET - Evaluation alerts",
                 "/api/v1/process": "POST - Process user query (recommended)",
                 "/api/process": "POST - Process user query (legacy)",
                 "/api/status": "GET - System status",
                 "/api/sessions": "POST - Create session",
                 "/api/memory": "GET - Memory information",
                 "/api/tools": "GET - List available tools",
-                "/api/metrics": "GET - Performance metrics"
+                "/api/metrics": "GET - Performance metrics (JSON format)"
             }
         }
 

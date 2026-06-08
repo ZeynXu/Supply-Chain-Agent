@@ -33,6 +33,8 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-07: Harness Engineering工程化能力：三层增强模型（配置化约束、可观测性、反馈改进）
 >
+> 2026-06-08: Agent评估系统：四层评估架构（九维轨迹评分、LLM Judge、Cohen's Kappa校准、数据集管理）
+>
 
 ---
 
@@ -119,6 +121,18 @@ Supply-Chain-Agent/
 │   │   │   └── weekly_report.py  # 周度报告
 │   │   ├── spec/                 # SPEC规范文件
 │   │   └── playbook.md           # Harness运维手册
+│   ├── evaluation/               # Agent评估系统
+│   │   ├── trajectory_scorer.py  # 九维轨迹评分
+│   │   ├── quality_scorer.py     # LLM Judge质量评分
+│   │   ├── kappa_calibration.py  # Cohen's Kappa校准
+│   │   ├── harness_integration.py # Harness集成
+│   │   ├── datasets/             # 数据集管理
+│   │   │   ├── dataset_manager.py
+│   │   │   └── golden/samples.json # 30个标准样本
+│   │   └── monitoring/           # 监控与告警
+│   │       ├── metrics_exporter.py
+│   │       ├── alert_manager.py
+│   │       └── dashboard.py
 │   ├── data/                     # Python数据模块
 │   │   ├── supply_chain.db       # 业务数据库(运行时)
 │   │   ├── agent_memory.db       # 记忆数据库(运行时)
@@ -138,8 +152,6 @@ Supply-Chain-Agent/
 │   ├── OtherData/                # 配置文件
 │   └── README.md                 # 数据说明
 ├── docs/                         # 项目文档
-│   ├── PROJECT_RESEARCH_REPORT.md # 项目研究报告
-│   └── Harness Engineering Design.md # Harness设计文档
 ├── requirements.txt              # Python依赖
 └── README.md                     # 本文件
 ```
@@ -252,6 +264,25 @@ Supply-Chain-Agent/
 
 详见 [Harness Playbook](./supply_chain_agent/harness/playbook.md)
 
+### 📊 Agent评估系统
+
+基于四层评估架构的完整Agent评估体系：
+
+| 层级 | 能力 | 说明 |
+|------|------|------|
+| **Layer 1** | 九维轨迹评分 | 工具选择、参数完整度、执行顺序等客观指标 |
+| **Layer 2** | LLM Judge | helpfulness、clarity、faithfulness主观质量评分 |
+| **Layer 3** | Cohen's Kappa校准 | 人机评估一致性检验，Kappa>0.6为合格 |
+| **Layer 4** | Harness集成 | 复用Rules、Evals、错误聚类能力 |
+
+**核心特性**：
+- **📈 九维客观评分**: 基于确定性规则，无模型偏见
+- **🤖 LLM Judge**: GLM-4.7-flash评估主观质量
+- **🎯 Golden Samples**: 30个标准评估样本，覆盖所有核心场景
+- **📊 监控告警**: Prometheus指标导出、仪表盘API、告警规则
+
+详见 [Agent Eval设计文档](./docs/Agent Eval.md)
+
 ## 🚀 快速开始
 
 ### 环境要求
@@ -322,6 +353,12 @@ HARNESS_METRICS_ENABLED=true         # Prometheus Metrics
 HARNESS_TRACE_ENABLED=true           # Trace收集
 HARNESS_TRACE_SAMPLE_RATE=0.01       # Trace采样率
 HARNESS_EVALS_LEVEL=1                # Evals评估等级(0=禁用,1=门禁,2=告警)
+
+# Agent评估系统配置
+EVAL_ENABLED=true                    # 启用评估系统
+EVAL_LLM_PROVIDER=zhipu              # LLM Judge提供商
+EVAL_LLM_MODEL=glm-4.7-flash         # LLM Judge模型
+EVAL_KAPPA_THRESHOLD=0.6             # Kappa校准阈值
 ```
 
 ### 访问地址
@@ -331,6 +368,9 @@ HARNESS_EVALS_LEVEL=1                # Evals评估等级(0=禁用,1=门禁,2=告
 | React前端 | http://localhost:3000 | 主要交互界面 |
 | FastAPI后端 | http://localhost:8000 | REST API服务 |
 | Prometheus Metrics | http://localhost:8000/metrics | 监控指标 |
+| 评估仪表盘 | http://localhost:8000/eval/dashboard | Agent评估数据 |
+| 评估指标 | http://localhost:8000/eval/metrics | 评估指标详情 |
+| 评估告警 | http://localhost:8000/eval/alerts | 评估告警列表 |
 | API文档 | http://localhost:8000/api/docs | Swagger文档 |
 
 ### 使用示例
@@ -486,7 +526,7 @@ Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采�
 - **触发条件**: `intent_level_2 = "审批工单"`
 - **功能**: 指导 LLM 生成执行计划、提取参数、执行工具
 
-### 审批工单分析流程（V2.6新增）
+### 审批工单分析流程
 
 审批工单意图采用**LLM分析推荐+用户确认**模式：
 
@@ -566,15 +606,17 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
 |------|------|----------|----------|
 | **Orchestrator** | orchestrator.py | ~400行 | 总控协调、依赖注入 |
 | **Parser** | parser.py | ~1000行 | 意图识别、实体提取 |
-| **Executor** | executor.py | ~1200行 | 工具编排、执行控制、审批分析（V2.6） |
+| **Executor** | executor.py | ~1200行 | 工具编排、执行控制、审批分析 |
 | **Auditor** | auditor.py | ~350行 | 结果验证、风控审计 |
 | **Workflow** | workflow.py | ~1800行 | 状态机、节点逻辑 |
 | **Exceptions** | exceptions.py | ~200行 | 异常层次结构 |
 | **ServiceContainer** | service_container.py | ~300行 | 服务容器（依赖注入） |
 | **MCP Server** | server.py | ~750行 | 工具服务、数据查询 |
 | **Database** | supply_chain_db.py | ~1400行 | 数据存储、业务查询 |
+| **Harness** | harness/* | ~1500行 | 工程化能力 |
+| **Evaluation** | evaluation/* | ~1700行 | Agent评估系统 |
 | **App** | app.py | ~1100行 | API服务、WebSocket |
-| **总计** | - | **~8500行** | 核心业务代码 |
+| **总计** | - | **~10500行** | 核心业务代码 |
 
 ### 📋 设计原则
 
@@ -603,9 +645,9 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
    - 输出：结构化意图（primary_task, secondary_task, entities, slots）
 
 3. **⚙️ Executor (调度员Agent)** (~1200行)
-   - 职责：工具编排、并发控制、结果收集、审批分析（V2.6新增）
+   - 职责：工具编排、并发控制、结果收集、审批分析
    - 能力：熔断保护、智能重试、规则参数提取、LLM审批分析
-   - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`, `generate_approval_analysis()`（V2.6新增）
+   - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`, `generate_approval_analysis()`
    - 输出：工具执行结果、审批分析报告
 
 4. **🛡️ Auditor (审计员Agent)** (~334行)
@@ -683,12 +725,19 @@ graph TD
    - 工具调用熔断保护，防止故障扩散
    - 多种重试策略，智能降级
 
-7. **📋 审批工单LLM分析推荐模式（V2.6新增）**
+7. **📋 审批工单LLM分析推荐模式**
    - 用户只需提供工单号，无需提前指定审批动作
    - 工具链执行后，LLM结合SOP文档进行风险分析和审批建议
    - 规则参数提取替代LLM解析，降低token消耗
    - 前端展示分析结果（风险等级、审批建议），用户确认后执行
    - 实现智能化审批辅助决策
+
+8. **📊 四层评估架构**
+   - Layer 1: 九维轨迹评分（工具选择、参数完整度、执行顺序等客观指标）
+   - Layer 2: LLM Judge质量评分（helpfulness、clarity、faithfulness）
+   - Layer 3: Cohen's Kappa校准（人机评估一致性检验）
+   - Layer 4: Harness集成（复用Rules、Evals、错误聚类能力）
+   - 30个Golden Samples覆盖所有核心场景
 
 ### 🚀 工程实践
 
@@ -703,14 +752,20 @@ graph TD
 
 3. **✅ 审批二次确认**
    - 危险操作（审批）必须用户二次确认
-   - V2.6新增LLM分析推荐+用户确认模式，智能化审批辅助决策
+   - LLM分析推荐+用户确认模式，智能化审批辅助决策
    - 防止误操作风险
 
 4. **📊 四维评估体系**
    - 效果、效率、体验、稳定性四维评估
    - 量化指标，持续优化
 
-5. **🔗 MCP工具对齐**
+5. **📈 Agent评估系统**
+   - 九维轨迹评分：工具选择、参数完整度、执行顺序等客观指标
+   - LLM Judge：helpfulness、clarity、faithfulness主观质量评分
+   - Cohen's Kappa校准：人机评估一致性检验
+   - Harness集成：复用现有工程化能力
+
+6. **🔗 MCP工具对齐**
    - 11个MCP工具完整实现，无虚构工具调用
    - 参数验证严格，可选参数按需传递
 

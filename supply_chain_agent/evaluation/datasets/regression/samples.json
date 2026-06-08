@@ -1,0 +1,19 @@
+[
+    {
+        "sample_id": "regression_001",
+        "user_query": "查询不存在的客户XXX999",
+        "gold_result": {
+            "expected_intent": {
+                "intent_level_1": "信息查询",
+                "intent_level_2": "客户查询"
+            },
+            "expected_tools": ["query_customer"],
+            "expected_response_keywords": ["不存在", "未找到"],
+            "expected_violations": []
+        },
+        "category": "edge_case",
+        "difficulty": "medium",
+        "source": "production_error",
+        "tags": ["边界", "不存在"]
+    }
+]
