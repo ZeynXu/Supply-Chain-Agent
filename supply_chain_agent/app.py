@@ -1093,12 +1093,23 @@ def create_app() -> FastAPI:
         """WebSocket real-time processing stream with detailed agent events."""
         await websocket.accept()
 
+        # 连接状态标志，用于在检测到断开时优雅退出
+        connection_active = True
+
         async def send_event(event_type: str, data: dict):
             """Helper to send agent events with connection state check."""
+            nonlocal connection_active
+
+            # 如果连接已标记为断开，直接返回
+            if not connection_active:
+                return
+
             # Check if WebSocket is still connected before sending
             if websocket.client_state == WebSocketState.DISCONNECTED:
                 print(f"⚠️ WebSocket disconnected, skipping {event_type} event")
+                connection_active = False
                 return
+
             try:
                 await websocket.send_json({
                     "type": event_type,
@@ -1107,14 +1118,43 @@ def create_app() -> FastAPI:
                 })
             except RuntimeError as e:
                 # Handle case where state check passes but send still fails
-                if "close message has been sent" in str(e):
+                error_str = str(e).lower()
+                if "close" in error_str or "send" in error_str:
                     print(f"⚠️ WebSocket closed during {event_type} send: {e}")
+                    connection_active = False
+                    return
+                raise
+            except Exception as e:
+                # 处理其他可能的WebSocket异常
+                error_str = str(e).lower()
+                if "websocket" in error_str or "connection" in error_str:
+                    print(f"⚠️ WebSocket error during {event_type} send: {e}")
+                    connection_active = False
                     return
                 raise
 
         try:
             while True:
-                data = await websocket.receive_text()
+                # 在接收消息前检查连接状态
+                if not connection_active:
+                    print("📌 WebSocket连接已断开，退出处理循环")
+                    break
+
+                # 检查WebSocket状态
+                if websocket.client_state == WebSocketState.DISCONNECTED:
+                    print("📌 检测到WebSocket已断开，退出处理循环")
+                    break
+
+                try:
+                    data = await websocket.receive_text()
+                except RuntimeError as e:
+                    # 处理 "WebSocket is not connected" 错误
+                    error_str = str(e).lower()
+                    if "not connected" in error_str or "accept" in error_str:
+                        print(f"📌 WebSocket连接已关闭: {e}")
+                        break
+                    raise
+
                 request = json.loads(data)
 
                 query = request.get("query", "")
@@ -1156,12 +1196,27 @@ def create_app() -> FastAPI:
                     })
 
                 except Exception as e:
+                    # 检查是否是连接相关的异常
+                    error_str = str(e).lower()
+                    if "websocket" in error_str or "connection" in error_str or "send" in error_str:
+                        print(f"📌 处理过程中连接断开: {e}")
+                        connection_active = False
+                        break
+
+                    # 非连接错误，尝试发送错误事件
                     await send_event("error", {
                         "error": str(e)
                     })
 
         except WebSocketDisconnect:
-            pass
+            print("📌 WebSocket客户端主动断开连接")
+        except RuntimeError as e:
+            # 捕获所有WebSocket运行时错误，优雅退出
+            error_str = str(e).lower()
+            if "websocket" in error_str or "not connected" in error_str or "accept" in error_str:
+                print(f"📌 WebSocket运行时错误，连接已关闭: {e}")
+            else:
+                raise
 
     return app
 
