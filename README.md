@@ -5,15 +5,13 @@
 [![Documentation](https://img.shields.io/badge/docs-中文文档-green.svg)](./docs/)
 [![Architecture](https://img.shields.io/badge/Architecture-Multi--Agent-blue.svg)](#)
 
-
 基于LangGraph框架构建的智能供应链工单处理Agent系统。本项目将多智能体协作技术应用于供应链运营场景，通过四Agent星型拓扑架构协同工作，为企业提供智能化的工单处理能力。
+
 > 技术栈：Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
 
-An intelligent agent system for supply chain work order processing built on the LangGraph framework. This project applies multi-agent collaboration technology to supply chain operations, enabling four agents to work together in a star topology architecture, delivering intelligent work order processing capabilities for enterprises.
-> Tech Stack: Python · LangChain · LangGraph · FastAPI · React · ChromaDB · SQLite
-
 ---
-> **更新记录** [持续更新中]
+
+> **更新记录** [已完结]
 >
 > 2026-05-13: 初始版本发布
 >
@@ -35,6 +33,7 @@ An intelligent agent system for supply chain work order processing built on the 
 >
 > 2026-06-08: Agent评估系统：四层评估架构（九维轨迹评分、LLM Judge、Cohen's Kappa校准、数据集管理）
 >
+> 2026-06-10: 更新README.md
 
 ---
 
@@ -88,7 +87,10 @@ Supply-Chain-Agent/
 │   │   ├── orchestrator.py       # 总控Agent
 │   │   ├── parser.py             # 解析师Agent
 │   │   ├── executor.py           # 调度员Agent
-│   │   └── auditor.py            # 审计员Agent
+│   │   ├── auditor.py            # 审计员Agent
+│   │   ├── llm_client.py         # LLM客户端
+│   │   ├── report_generator.py   # 报告生成器
+│   │   └── retry_manager.py      # 重试管理器
 │   ├── tools/                    # MCP工具实现
 │   │   ├── server.py             # MCP服务器
 │   │   └── client.py             # 工具客户端
@@ -122,17 +124,25 @@ Supply-Chain-Agent/
 │   │   ├── spec/                 # SPEC规范文件
 │   │   └── playbook.md           # Harness运维手册
 │   ├── evaluation/               # Agent评估系统
-│   │   ├── trajectory_scorer.py  # 九维轨迹评分
-│   │   ├── quality_scorer.py     # LLM Judge质量评分
-│   │   ├── kappa_calibration.py  # Cohen's Kappa校准
-│   │   ├── harness_integration.py # Harness集成
+│   │   ├── core/                 # 核心评估组件
+│   │   │   ├── base.py           # 基础数据结构
+│   │   │   ├── trajectory_scorer.py  # 九维轨迹评分
+│   │   │   └── tool_call_validator.py  # 工具调用验证
+│   │   ├── judges/               # LLM Judge评估
+│   │   │   ├── rubrics.py        # 评分标准
+│   │   │   ├── llm_judge.py      # LLM Judge质量评分
+│   │   │   └── calibrator.py     # Cohen's Kappa校准
 │   │   ├── datasets/             # 数据集管理
-│   │   │   ├── dataset_manager.py
 │   │   │   └── golden/samples.json # 30个标准样本
-│   │   └── monitoring/           # 监控与告警
-│   │       ├── metrics_exporter.py
-│   │       ├── alert_manager.py
-│   │       └── dashboard.py
+│   │   ├── runners/              # 评估运行器
+│   │   │   └── eval_runner.py    # 评估执行
+│   │   ├── monitoring/           # 监控与告警
+│   │   │   ├── metrics_exporter.py
+│   │   │   └── dashboard.py
+│   │   ├── reports/              # 报告生成
+│   │   │   └── generator.py
+│   │   ├── harness_integration.py # Harness集成
+│   │   └── config.py             # 评估配置
 │   ├── data/                     # Python数据模块
 │   │   ├── supply_chain.db       # 业务数据库(运行时)
 │   │   ├── agent_memory.db       # 记忆数据库(运行时)
@@ -142,9 +152,11 @@ Supply-Chain-Agent/
 │   ├── models/                   # 模型文件
 │   │   └── bert-chinese-wwm/     # BERT中文预训练模型
 │   ├── frontend/                 # React前端
+│   ├── config/                   # 配置模块
+│   │   └── __init__.py           # 统一配置入口
+│   ├── config_main.py            # 主配置文件
 │   ├── app.py                    # FastAPI应用
 │   ├── run.py                    # 运行脚本
-│   ├── config.py                 # 配置管理
 │   └── AGENTS.md                 # 系统入口指南
 ├── dataset/                      # 数据源目录
 │   ├── BusinessData/             # 业务数据(CSV)
@@ -162,19 +174,18 @@ Supply-Chain-Agent/
 
 基于 **LangGraph** 构建的多智能体工作流：
 
-```
-                    ┌─────────────────┐
-                    │   Orchestrator  │
-                    │   (总控Agent)    │
-                    └────────┬────────┘
-                             │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-           ▼                 ▼                 ▼
-    ┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-    │   Parser    │   │  Executor   │   │  Auditor    │
-    │  (解析师)   │   │  (调度员)   │   │  (审计员)   │
-    └─────────────┘   └─────────────┘   └─────────────┘
+```mermaid
+graph TB
+    subgraph "四Agent星型拓扑"
+        O[Orchestrator<br/>总控Agent]
+        P[Parser<br/>解析师]
+        E[Executor<br/>调度员]
+        A[Auditor<br/>审计员]
+        
+        O --> P
+        O --> E
+        O --> A
+    end
 ```
 
 **核心设计原则**:
@@ -184,8 +195,6 @@ Supply-Chain-Agent/
 - **👤 Human-in-the-loop**: 关键操作支持人工确认
 
 ### 🔧 技术栈选型
-
-### 🧠 LLM与NLP
 
 | 技术领域 | 选型方案 | 选择理由 |
 |---------|---------|---------|
@@ -199,26 +208,15 @@ Supply-Chain-Agent/
 
 ### 🧠 三层记忆系统
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    短期记忆 (Short-term)                     │
-│  • 滑动窗口存储最近20条对话                                  │
-│  • 支持摘要压缩防止Token溢出                                 │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    工作记忆 (Working)                        │
-│  • LangGraph共享状态 (AgentState)                           │
-│  • 支持检查点持久化                                          │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    长期记忆 (Long-term)                      │
-│  • ChromaDB: SOP手册、FAQ知识库                              │
-│  • SQLite: 工单记录、操作日志、统计数据                      │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "三层记忆系统"
+        STM[短期记忆 Short-term<br/>滑动窗口存储最近20条对话<br/>支持摘要压缩防止Token溢出]
+        WM[工作记忆 Working<br/>LangGraph共享状态 AgentState<br/>支持检查点持久化]
+        LTM[长期记忆 Long-term<br/>ChromaDB: SOP手册、FAQ知识库<br/>SQLite: 工单记录、操作日志]
+        
+        STM --> WM --> LTM
+    end
 ```
 
 ## ✨ 功能特性
@@ -279,7 +277,7 @@ Supply-Chain-Agent/
 - **📈 九维客观评分**: 基于确定性规则，无模型偏见
 - **🤖 LLM Judge**: GLM-4.7-flash评估主观质量
 - **🎯 Golden Samples**: 30个标准评估样本，覆盖所有核心场景
-- **📊 监控告警**: Prometheus指标导出、仪表盘API、告警规则
+- **📊 监控告警**: Prometheus指标导出、仪表盘API
 
 详见 [Agent Eval设计文档](./docs/Agent Eval.md)
 
@@ -514,7 +512,7 @@ print(f"客户: {customer['customer_fname']} {customer['customer_lname']}")
 - **处理流程**: 意图识别→异常上报 → 实体提取(issue_type=物流延迟, order_id=75939) → 调用report_issue工具 → 响应生成
 - **输出结果**: "已上报物流延迟异常，工单号ISS-2026-XXX，已通知相关责任人"
 
-## Skill 系统
+## 🔍 Skill 系统
 
 Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采用渐进式披露（Progressive Disclosure）的上下文工程技术。
 
@@ -547,11 +545,7 @@ Supply-Chain-Agent 使用 Skill 系统指导 LLM 完成特定任务。Skill 采�
 ```
 skills/
 └── approval_workflow/
-    ├── SKILL.md              # 主 skill 文件
-    └── procedures/           # 渐进式披露子流程
-        ├── plan_generation.md
-        ├── param_extraction.md
-        └── tool_execution.md
+    └── SKILL.md              # 主 skill 文件
 ```
 
 ### 配置选项
@@ -590,33 +584,28 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
 | 普通模式 | 启用 | 65536 | ~35秒 |
 | 快速模式 | 禁用 | 512-1024 | ~5秒 |
 
-### 前端实时进度显示
-
-前端 Agent 执行轨迹面板实时显示 Skill 加载过程：
-
-- **实时事件流**: 使用 LangGraph `astream_events` API，节点进入时立即显示
-- **Skill 卡片**: 与工具调用卡片风格一致，显示加载状态、耗时、结果
-- **PendingSkills 机制**: 处理事件顺序问题，确保 Skill 正确关联到对应步骤
-
 ## 🏗️ 架构设计
 
 ### 📊 代码规模统计
 
 | 模块 | 文件 | 代码行数 | 主要职责 |
 |------|------|----------|----------|
-| **Orchestrator** | orchestrator.py | ~400行 | 总控协调、依赖注入 |
-| **Parser** | parser.py | ~1000行 | 意图识别、实体提取 |
-| **Executor** | executor.py | ~1200行 | 工具编排、执行控制、审批分析 |
-| **Auditor** | auditor.py | ~350行 | 结果验证、风控审计 |
-| **Workflow** | workflow.py | ~1800行 | 状态机、节点逻辑 |
+| **Orchestrator** | orchestrator.py | ~470行 | 总控协调、依赖注入 |
+| **Parser** | parser.py | ~1200行 | 意图识别、实体提取 |
+| **Executor** | executor.py | ~1600行 | 工具编排、执行控制、审批分析 |
+| **Auditor** | auditor.py | ~450行 | 结果验证、风控审计 |
+| **LLMClient** | llm_client.py | ~500行 | LLM调用、Skill加载 |
+| **ReportGenerator** | report_generator.py | ~650行 | 报告生成 |
+| **RetryManager** | retry_manager.py | ~580行 | 重试策略管理 |
+| **Workflow** | workflow.py | ~2000行 | 状态机、节点逻辑 |
 | **Exceptions** | exceptions.py | ~200行 | 异常层次结构 |
-| **ServiceContainer** | service_container.py | ~300行 | 服务容器（依赖注入） |
-| **MCP Server** | server.py | ~750行 | 工具服务、数据查询 |
-| **Database** | supply_chain_db.py | ~1400行 | 数据存储、业务查询 |
-| **Harness** | harness/* | ~1500行 | 工程化能力 |
-| **Evaluation** | evaluation/* | ~1700行 | Agent评估系统 |
-| **App** | app.py | ~1100行 | API服务、WebSocket |
-| **总计** | - | **~10500行** | 核心业务代码 |
+| **ServiceContainer** | service_container.py | ~320行 | 服务容器（依赖注入） |
+| **MCP Server** | server.py | ~770行 | 工具服务、数据查询 |
+| **Database** | supply_chain_db.py | ~1520行 | 数据存储、业务查询 |
+| **Harness** | harness/* | ~2540行 | 工程化能力 |
+| **Evaluation** | evaluation/* | ~4990行 | Agent评估系统 |
+| **App** | app.py | ~1180行 | API服务、WebSocket |
+| **总计** | - | **~17500行** | 核心业务代码 |
 
 ### 📋 设计原则
 
@@ -638,19 +627,19 @@ async def generate_json_fast(self, prompt: str, max_tokens: int = 1024) -> Dict:
    - 核心方法：`process()`, `process_with_callback()`, `_extract_response()`
    - 输出：最终响应
 
-2. **🔍 Parser (解析师Agent)** (~830行)
+2. **🔍 Parser (解析师Agent)** (~1200行)
    - 职责：意图识别、实体提取、槽位填充
    - 三层意图识别有明确触发条件，实体提取方法分离
    - 核心方法：`parse_intent()`, `_extract_entities_by_rules()`, `_extract_entities_by_ner()`
    - 输出：结构化意图（primary_task, secondary_task, entities, slots）
 
-3. **⚙️ Executor (调度员Agent)** (~1200行)
+3. **⚙️ Executor (调度员Agent)** (~1600行)
    - 职责：工具编排、并发控制、结果收集、审批分析
    - 能力：熔断保护、智能重试、规则参数提取、LLM审批分析
    - 核心方法：`execute_plan_with_llm_feedback()`, `execute_tool()`, `generate_approval_analysis()`
    - 输出：工具执行结果、审批分析报告
 
-4. **🛡️ Auditor (审计员Agent)** (~334行)
+4. **🛡️ Auditor (审计员Agent)** (~450行)
    - 职责：结果验证、风控拦截、一致性检查
    - 能力：多维度审计规则（missing_tracking_number, unusual_delivery_time等）
    - 核心方法：`audit_results()`, `_check_single_result()`
@@ -790,6 +779,16 @@ graph TD
 | `supply_chain.db` | 业务数据库（客户、订单、产品等） |
 | `agent_memory.db` | 记忆数据库（工单记录、工具统计） |
 | `vector_store/` | ChromaDB向量存储（SOP文档嵌入） |
+
+## 🔮 下一步优化方向
+
+本项目可从以下方面进行完善和优化：
+
+1. **🧠 意图识别增强**: 引入更多训练数据优化BERT NER模型，提升实体提取准确率；探索多语言支持能力
+2. **📊 评估体系完善**: 扩展Golden Samples覆盖更多边缘场景；引入A/B测试框架对比不同策略效果
+3. **🔌 工具生态扩展**: 接入更多企业系统（ERP、WMS、TMS）；支持自定义工具插件机制
+4. **⚡ 性能优化**: 实现LLM响应流式输出；优化向量检索性能；引入缓存层减少重复查询
+5. **🛡️ 可靠性提升**: 完善端到端测试覆盖；引入混沌工程验证系统容错能力；优化熔断器策略
 
 ## 🤝 贡献指南
 

@@ -24,3 +24,6 @@ Key Features:
 __version__ = "1.0.0"
 __author__ = "Supply Chain Agent Team"
 __license__ = "MIT"
+
+# 统一配置入口（向后兼容）
+from supply_chain_agent.config import settings
